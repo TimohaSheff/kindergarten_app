@@ -1,0 +1,95 @@
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* Глобальные стили для режима высокой контрастности */
+.high-contrast-mode {
+  /* Увеличиваем контрастность всех элементов */
+  * {
+    border-color: #FFFFFF !important;
+  }
+
+  /* Стили для ссылок */
+  a {
+    color: #FFFF00 !important;
+    text-decoration: underline !important;
+  }
+
+  a:hover {
+    color: #FFFFFF !important;
+    background-color: #000000 !important;
+  }
+
+  /* Стили для кнопок */
+  button {
+    border: 2px solid #FFFFFF !important;
+    outline: 2px solid transparent !important;
+  }
+
+  button:focus {
+    outline: 2px solid #FFFF00 !important;
+  }
+
+  /* Стили для полей ввода */
+  input, textarea, select {
+    background-color: #000000 !important;
+    color: #FFFFFF !important;
+    border: 2px solid #FFFFFF !important;
+  }
+
+  input:focus, textarea:focus, select:focus {
+    outline: 2px solid #FFFF00 !important;
+  }
+
+  /* Стили для таблиц */
+  table {
+    border: 2px solid #FFFFFF !important;
+  }
+
+  th, td {
+    border: 1px solid #FFFFFF !important;
+  }
+
+  /* Стили для фокуса на элементах */
+  *:focus {
+    outline: 2px solid #FFFF00 !important;
+    outline-offset: 2px !important;
+  }
+}
+
+/* Стили для режима большого шрифта */
+.big-font-mode {
+  /* Увеличиваем отступы для лучшей читаемости */
+  * {
+    line-height: 1.5 !important;
+  }
+
+  /* Увеличиваем размер иконок */
+  .MuiSvgIcon-root {
+    font-size: 1.5em !important;
+  }
+
+  /* Увеличиваем размер кнопок */
+  button {
+    padding: 12px 24px !important;
+  }
+
+  /* Увеличиваем размер полей ввода */
+  input, textarea, select {
+    padding: 12px !important;
+  }
+}

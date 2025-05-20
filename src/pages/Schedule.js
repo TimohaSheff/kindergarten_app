@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
+import { useOutletContext } from 'react-router-dom';
 import {
   Box,
   Container,
@@ -37,20 +38,28 @@ import {
   Close as CloseIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
-import { groupsApi, scheduleApi } from '../api/api';
-import { useSnackbar } from 'notistack';
+import api from '../api/api';
+import { useSnackbar } from '../hooks/useSnackbar';
+import { useGroups } from '../hooks/useGroups';
 import { TimePicker } from '@mui/x-date-pickers/TimePicker';
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import { format, parse } from 'date-fns';
 import { ru } from 'date-fns/locale';
 
+// Ленивая загрузка компонентов
+const ScheduleForm = lazy(() => import('../components/schedule/ScheduleForm'));
+const ScheduleTable = lazy(() => import('../components/schedule/ScheduleTable'));
+
 const Schedule = () => {
   const { user } = useAuth();
   const theme = useTheme();
   const [schedule, setSchedule] = useState([]);
-  const [groups, setGroups] = useState([]);
+  const { showSnackbar } = useSnackbar();
+  const { groups, loading: groupsLoading, error: groupsError } = useGroups();
+  const [children, setChildren] = useState([]);
   const [selectedGroup, setSelectedGroup] = useState('');
+  const [selectedChild, setSelectedChild] = useState(null);
   const [openDialog, setOpenDialog] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState(null);
   const [formData, setFormData] = useState({
@@ -58,56 +67,66 @@ const Schedule = () => {
     time_of_day: '',
     group_name: ''
   });
-  const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const { enqueueSnackbar } = useSnackbar();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [scheduleToDelete, setScheduleToDelete] = useState(null);
   const [startTime, setStartTime] = useState(null);
   const [endTime, setEndTime] = useState(null);
+  const { PageTitle } = useOutletContext();
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        setLoading(true);
-        
-        // Загрузка групп
-        const groupsData = await groupsApi.getGroups();
-        console.log('Received groups data:', groupsData);
-
-        // Проверяем и нормализуем данные групп
-        const normalizedGroups = (groupsData || []).map((group, index) => ({
-          ...group,
-          id: group.id || `temp-${index}`,
-          value: group.group_name || group.name, // Используем group_name из БД
-          name: group.group_name || group.name || `Группа ${index + 1}` // Используем group_name из БД
-        })).filter(group => group.name);
-        
-        console.log('Normalized groups:', normalizedGroups);
-        setGroups(normalizedGroups);
-        
-        if (normalizedGroups.length > 0) {
-          setSelectedGroup(normalizedGroups[0].name);
-          console.log('Selected initial group:', normalizedGroups[0].name);
+    const fetchChildren = async () => {
+      if (user.role === 'parent') {
+        try {
+          const response = await api.children.getAll({ parent_id: user.id });
+          console.log('Получены дети родителя:', response);
+          
+          if (Array.isArray(response.data)) {
+            // Создаем Map для удаления дубликатов по id
+            const uniqueChildrenMap = new Map();
+            
+            response.data.forEach(child => {
+              const childId = child.id || child.child_id;
+              if (!uniqueChildrenMap.has(childId)) {
+                uniqueChildrenMap.set(childId, {
+                  id: childId,
+                  child_id: childId,
+                  name: child.name,
+                  group_name: child.group_name || ''
+                });
+              }
+            });
+            
+            const formattedChildren = Array.from(uniqueChildrenMap.values());
+            console.log('Отформатированные данные детей (уникальные):', formattedChildren);
+            
+            setChildren(formattedChildren);
+            
+            if (formattedChildren.length > 0) {
+              const firstChild = formattedChildren[0];
+              console.log('Устанавливаем первого ребенка:', firstChild);
+              setSelectedChild(firstChild);
+              setSelectedGroup(firstChild.group_name);
+            }
+          }
+        } catch (error) {
+          console.error('Ошибка при загрузке списка детей:', error);
+          showSnackbar({
+            message: 'Ошибка при загрузке списка детей',
+            severity: 'error'
+          });
         }
-        
-        setError(null);
-      } catch (err) {
-        console.error('Error fetching data:', err);
-        setError(err.message || 'Ошибка при загрузке данных');
-      } finally {
-        setLoading(false);
       }
     };
 
-    fetchData();
-  }, []);
+    fetchChildren();
+  }, [user.role, user.id]);
 
   const fetchSchedule = async () => {
     if (!selectedGroup) {
       setSchedule([]);
-      setError('Пожалуйста, выберите группу');
+      setLoading(false);
       return;
     }
 
@@ -115,17 +134,31 @@ const Schedule = () => {
     setError(null);
 
     try {
-      const scheduleData = await scheduleApi.getScheduleByGroup(selectedGroup);
-      if (!Array.isArray(scheduleData)) {
-        throw new Error('Неверный формат данных расписания');
-      }
-      setSchedule(scheduleData);
+      const response = await api.schedule.getByGroup(selectedGroup);
+      
+      // Функция для конвертации времени в минуты
+      const timeToMinutes = (timeStr) => {
+        const [hours, minutes] = timeStr.split(':').map(Number);
+        return hours * 60 + minutes;
+      };
+      
+      // Сортируем расписание по времени
+      const sortedSchedule = response.sort((a, b) => {
+        const timeA = timeToMinutes(a.time_of_day.split('-')[0].trim());
+        const timeB = timeToMinutes(b.time_of_day.split('-')[0].trim());
+        return timeA - timeB;
+      });
+      
+      setSchedule(sortedSchedule);
       setError(null);
     } catch (error) {
       console.error('Ошибка при загрузке расписания:', error);
       setSchedule([]);
-      setError(error.message || 'Не удалось загрузить расписание');
-      enqueueSnackbar('Не удалось загрузить расписание', { variant: 'error' });
+      setError('Не удалось загрузить расписание');
+      showSnackbar({
+        message: 'Не удалось загрузить расписание',
+        severity: 'error'
+      });
     } finally {
       setLoading(false);
     }
@@ -139,14 +172,29 @@ const Schedule = () => {
     if (item) {
       console.log('Editing schedule item:', item);
       setEditingSchedule(item);
-      const [start, end] = item.time_of_day.split('-');
-      setStartTime(parse(start, 'HH:mm', new Date()));
-      setEndTime(parse(end, 'HH:mm', new Date()));
-      setFormData({
-        action: item.action || '',
-        time_of_day: item.time_of_day || '',
-        group_name: selectedGroup
-      });
+      try {
+        const [start, end] = item.time_of_day.split('-');
+        const startDate = parse(start.trim(), 'HH:mm', new Date());
+        const endDate = parse(end.trim(), 'HH:mm', new Date());
+        
+        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+          throw new Error('Invalid time format');
+        }
+        
+        setStartTime(startDate);
+        setEndTime(endDate);
+        setFormData({
+          action: item.action || '',
+          time_of_day: item.time_of_day || '',
+          group_name: selectedGroup
+        });
+      } catch (error) {
+        console.error('Error parsing time:', error);
+        showSnackbar({
+          message: 'Ошибка при обработке времени',
+          severity: 'error'
+        });
+      }
     } else {
       setEditingSchedule(null);
       setStartTime(null);
@@ -163,60 +211,77 @@ const Schedule = () => {
   const handleCloseDialog = () => {
     setOpenDialog(false);
     setEditingSchedule(null);
+    setFormData({
+      action: '',
+      time_of_day: '',
+      group_name: selectedGroup
+    });
   };
 
   const handleTimeChange = (newStartTime, newEndTime) => {
-    if (newStartTime && newEndTime) {
-      const formattedStart = format(newStartTime, 'HH:mm');
-      const formattedEnd = format(newEndTime, 'HH:mm');
-      setFormData({
-        ...formData,
-        time_of_day: `${formattedStart}-${formattedEnd}`
-      });
+    try {
+      if (newStartTime && newEndTime) {
+        if (!(newStartTime instanceof Date && !isNaN(newStartTime)) || 
+            !(newEndTime instanceof Date && !isNaN(newEndTime))) {
+          console.error('Invalid date objects:', { newStartTime, newEndTime });
+          return;
+        }
+
+        const formattedStart = format(newStartTime, 'HH:mm');
+        const formattedEnd = format(newEndTime, 'HH:mm');
+        
+        setFormData(prev => ({
+          ...prev,
+          time_of_day: `${formattedStart}-${formattedEnd}`
+        }));
+      }
+    } catch (error) {
+      console.error('Error formatting time:', error);
     }
   };
 
   const handleSave = async (scheduleItem) => {
     try {
-      console.log('Сохранение элемента расписания:', scheduleItem);
-      
-      if (editingSchedule) {
-        console.log('Обновление существующего элемента:', editingSchedule.schedule_id);
-        await scheduleApi.updateScheduleItem(editingSchedule.schedule_id, {
-          ...scheduleItem,
-          group_name: selectedGroup
+      if (!scheduleItem.action || !scheduleItem.time_of_day) {
+        showSnackbar({
+          message: 'Заполните все поля',
+          severity: 'error'
         });
-        setSnackbar({
-          open: true,
+        return;
+      }
+
+      setLoading(true);
+      
+      const dataToSave = {
+        action: scheduleItem.action,
+        time_of_day: scheduleItem.time_of_day,
+        group_name: selectedGroup
+      };
+
+      if (editingSchedule) {
+        await api.schedule.update(editingSchedule.schedule_id, dataToSave);
+        showSnackbar({
           message: 'Расписание успешно обновлено',
           severity: 'success'
         });
       } else {
-        console.log('Создание нового элемента расписания');
-        await scheduleApi.createScheduleItem({
-          ...scheduleItem,
-          group_name: selectedGroup
-        });
-        setSnackbar({
-          open: true,
+        await api.schedule.create(dataToSave);
+        showSnackbar({
           message: 'Расписание успешно создано',
           severity: 'success'
         });
       }
       
-      setOpenDialog(false);
-      setEditingSchedule(null);
-      
-      // Обновляем список расписания
-      console.log('Обновление списка расписания после сохранения');
+      handleCloseDialog();
       await fetchSchedule();
     } catch (error) {
       console.error('Ошибка при сохранении расписания:', error);
-      setSnackbar({
-        open: true,
+      showSnackbar({
         message: error.message || 'Ошибка при сохранении расписания',
         severity: 'error'
       });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -228,22 +293,20 @@ const Schedule = () => {
   const handleConfirmDelete = async () => {
     try {
       setLoading(true);
-      await scheduleApi.deleteScheduleItem(scheduleToDelete);
+      await api.schedule.delete(scheduleToDelete);
       
-      const scheduleData = await scheduleApi.getScheduleByGroup(selectedGroup);
+      const scheduleData = await api.schedule.getByGroup(selectedGroup);
       if (Array.isArray(scheduleData)) {
         setSchedule(scheduleData);
       }
       
-      setSnackbar({ 
-        open: true, 
+      showSnackbar({ 
         message: 'Расписание удалено', 
         severity: 'success' 
       });
     } catch (err) {
       console.error('Error deleting schedule:', err);
-      setSnackbar({ 
-        open: true, 
+      showSnackbar({ 
         message: err.message || 'Ошибка при удалении расписания', 
         severity: 'error' 
       });
@@ -259,33 +322,110 @@ const Schedule = () => {
     setScheduleToDelete(null);
   };
 
+  if (groupsLoading) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" minHeight="200px">
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (groupsError || error) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" minHeight="200px">
+        <Alert severity="error">
+          {groupsError || error}
+        </Alert>
+      </Box>
+    );
+  }
+
   return (
     <Container maxWidth="lg">
-      <Box sx={{ my: 4 }}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 4 }}>
-          <Typography variant="h4" component="h1" gutterBottom>
-            Расписание
-          </Typography>
-          <FormControl sx={{ minWidth: 200 }}>
-            <InputLabel>Группа</InputLabel>
-            <Select
-              value={selectedGroup || ''}
-              onChange={(e) => {
-                console.log('Selected group changed to:', e.target.value);
-                setSelectedGroup(e.target.value);
+      <Box sx={{ my: 2 }}>
+        <PageTitle>Расписание</PageTitle>
+        
+        <Box sx={{ 
+          display: 'flex', 
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          gap: 2,
+          mb: 4 
+        }}>
+          {user.role === 'parent' ? (
+            <FormControl sx={{ minWidth: 200 }}>
+              <InputLabel>Ребенок</InputLabel>
+              <Select
+                value={selectedChild?.id || ''}
+                onChange={(e) => {
+                  const child = children.find(c => c.id === e.target.value);
+                  console.log('Выбран ребенок:', child);
+                  setSelectedChild(child);
+                  if (child) {
+                    setSelectedGroup(child.group_name);
+                  }
+                }}
+                label="Ребенок"
+                size="small"
+              >
+                {children.map((child) => (
+                  <MenuItem 
+                    key={`child-${child.id}`} 
+                    value={child.id}
+                  >
+                    {child.name} - {child.group_name || 'Группа не указана'}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          ) : (
+            <FormControl sx={{ minWidth: 200 }}>
+              <InputLabel>Группа</InputLabel>
+              <Select
+                value={selectedGroup}
+                onChange={(e) => {
+                  console.log('Selected group changed to:', e.target.value);
+                  setSelectedGroup(e.target.value);
+                }}
+                label="Группа"
+                size="small"
+              >
+                {Array.isArray(groups) && groups.map((group) => (
+                  <MenuItem 
+                    key={group.id} 
+                    value={group.name}
+                  >
+                    {group.name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
+
+          {user.role !== 'parent' && (
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={() => handleOpenDialog()}
+              disabled={!selectedGroup}
+              sx={{
+                borderRadius: '8px',
+                fontSize: '0.9rem',
+                fontWeight: 600,
+                padding: '8px 16px',
+                height: '40px',
+                backgroundColor: 'primary.main',
+                textTransform: 'none',
+                boxShadow: 'none',
+                '&:hover': {
+                  backgroundColor: 'primary.dark',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.15)'
+                }
               }}
-              label="Группа"
             >
-              {groups.map((group, index) => (
-                <MenuItem 
-                  key={group.id || `group-${index}`} 
-                  value={group.name || ''}
-                >
-                  {group.name}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
+              Добавить расписание
+            </Button>
+          )}
         </Box>
 
         {loading ? (
@@ -297,207 +437,88 @@ const Schedule = () => {
             {error}
           </Alert>
         ) : (
-          <>
-            <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
-              <Button
-                variant="contained"
-                startIcon={<AddIcon />}
-                onClick={() => handleOpenDialog()}
-              >
-                Добавить расписание
-              </Button>
-            </Box>
-
-            <TableContainer component={Paper} sx={{ mb: 4 }}>
-              <Table>
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Время</TableCell>
-                    <TableCell>Активность</TableCell>
-                    <TableCell>Действия</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {schedule.map((item) => (
-                    <TableRow key={item.schedule_id}>
-                      <TableCell>{item.time_of_day}</TableCell>
-                      <TableCell>{item.action}</TableCell>
-                      <TableCell>
-                        <IconButton onClick={() => handleOpenDialog(item)} size="small">
-                          <EditIcon />
-                        </IconButton>
-                        <IconButton onClick={() => handleDelete(item.schedule_id)} size="small" color="error">
-                          <DeleteIcon />
-                        </IconButton>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {schedule.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={3} align="center">
-                        Расписание не найдено
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </>
+          <Box mt={3}>
+            <Suspense fallback={<CircularProgress />}>
+              <ScheduleTable
+                schedule={schedule}
+                onEdit={user.role !== 'parent' ? handleOpenDialog : undefined}
+                onDelete={user.role !== 'parent' ? handleDelete : undefined}
+              />
+            </Suspense>
+          </Box>
         )}
 
-        <Dialog
-          open={openDialog}
-          onClose={handleCloseDialog}
-          maxWidth="sm"
-          fullWidth
-          PaperProps={{
-            sx: {
-              borderRadius: '16px',
-              boxShadow: '0 12px 48px rgba(0, 0, 0, 0.12)'
-            }
-          }}
-        >
-          <DialogTitle>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Typography variant="h6">
-                {editingSchedule ? 'Редактировать расписание' : 'Добавить расписание'}
-              </Typography>
-              <IconButton onClick={handleCloseDialog}>
-                <CloseIcon />
-              </IconButton>
-            </Box>
-          </DialogTitle>
-          <DialogContent>
-            <Box sx={{ mt: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <LocalizationProvider dateAdapter={AdapterDateFns} adapterLocale={ru}>
-                <Box sx={{ display: 'flex', gap: 2 }}>
-                  <TimePicker
-                    label="Начало"
-                    value={startTime}
-                    onChange={(newValue) => {
-                      setStartTime(newValue);
-                      if (endTime) {
-                        handleTimeChange(newValue, endTime);
-                      }
-                    }}
-                    sx={{ flex: 1 }}
-                    ampm={false}
-                    format="HH:mm"
-                  />
-                  <TimePicker
-                    label="Конец"
-                    value={endTime}
-                    onChange={(newValue) => {
-                      setEndTime(newValue);
-                      if (startTime) {
-                        handleTimeChange(startTime, newValue);
-                      }
-                    }}
-                    sx={{ flex: 1 }}
-                    ampm={false}
-                    format="HH:mm"
-                  />
-                </Box>
-              </LocalizationProvider>
-              <TextField
-                required
-                fullWidth
-                label="Активность"
-                value={formData.action || ''}
-                onChange={(e) => setFormData({ ...formData, action: e.target.value })}
-                multiline
-                rows={2}
-                error={!formData.action}
-                helperText={!formData.action ? 'Обязательное поле' : ''}
-              />
-            </Box>
-          </DialogContent>
-          <DialogActions sx={{ p: 2 }}>
-            <Button 
-              onClick={handleCloseDialog}
-              sx={{ borderRadius: '8px' }}
-            >
-              Отмена
-            </Button>
-            <Button 
-              onClick={() => handleSave(formData)} 
-              variant="contained"
-              disabled={!formData.time_of_day || !formData.action}
-              sx={{ borderRadius: '8px' }}
-            >
-              Сохранить
-            </Button>
-          </DialogActions>
-        </Dialog>
+        {user.role !== 'parent' && (
+          <Suspense fallback={<CircularProgress />}>
+            <ScheduleForm
+              open={openDialog}
+              onClose={handleCloseDialog}
+              formData={formData}
+              startTime={startTime}
+              endTime={endTime}
+              onStartTimeChange={setStartTime}
+              onEndTimeChange={setEndTime}
+              onSave={handleSave}
+            />
+          </Suspense>
+        )}
 
-        <Dialog
-          open={deleteDialogOpen}
-          onClose={handleCancelDelete}
-          PaperProps={{
-            sx: {
-              borderRadius: '16px',
-              padding: '16px',
-              maxWidth: '400px'
-            }
-          }}
-        >
-          <DialogTitle sx={{
-            fontSize: '1.5rem',
-            fontWeight: 600,
-            color: 'error.main',
-            pb: 1
-          }}>
-            Подтверждение удаления
-          </DialogTitle>
-          <DialogContent>
-            <Typography variant="body1" sx={{ mb: 2 }}>
-              Вы действительно хотите удалить это расписание? Это действие нельзя будет отменить.
-            </Typography>
-          </DialogContent>
-          <DialogActions sx={{ p: 2, pt: 0 }}>
-            <Button
-              onClick={handleCancelDelete}
-              sx={{
-                borderRadius: '8px',
-                textTransform: 'none',
-                px: 3
-              }}
-            >
-              Отмена
-            </Button>
-            <Button
-              onClick={handleConfirmDelete}
-              variant="contained"
-              color="error"
-              sx={{
-                borderRadius: '8px',
-                textTransform: 'none',
-                px: 3,
-                boxShadow: 'none',
-                '&:hover': {
-                  boxShadow: 'none',
-                  backgroundColor: 'error.dark'
-                }
-              }}
-            >
-              Удалить
-            </Button>
-          </DialogActions>
-        </Dialog>
-
-        <Snackbar
-          open={snackbar.open}
-          autoHideDuration={6000}
-          onClose={() => setSnackbar({ ...snackbar, open: false })}
-        >
-          <Alert
-            onClose={() => setSnackbar({ ...snackbar, open: false })}
-            severity={snackbar.severity}
-            sx={{ width: '100%', borderRadius: '8px' }}
+        {user.role !== 'parent' && (
+          <Dialog
+            open={deleteDialogOpen}
+            onClose={handleCancelDelete}
+            PaperProps={{
+              sx: {
+                borderRadius: '16px',
+                padding: '16px',
+                maxWidth: '400px'
+              }
+            }}
           >
-            {snackbar.message}
-          </Alert>
-        </Snackbar>
+            <DialogTitle sx={{
+              fontSize: '1.5rem',
+              fontWeight: 600,
+              color: 'error.main',
+              pb: 1
+            }}>
+              Подтверждение удаления
+            </DialogTitle>
+            <DialogContent>
+              <Typography variant="body1" sx={{ mb: 2 }}>
+                Вы действительно хотите удалить это расписание? Это действие нельзя будет отменить.
+              </Typography>
+            </DialogContent>
+            <DialogActions sx={{ p: 2, pt: 0 }}>
+              <Button
+                onClick={handleCancelDelete}
+                sx={{
+                  borderRadius: '8px',
+                  textTransform: 'none',
+                  px: 3
+                }}
+              >
+                Отмена
+              </Button>
+              <Button
+                onClick={handleConfirmDelete}
+                variant="contained"
+                color="error"
+                sx={{
+                  borderRadius: '8px',
+                  textTransform: 'none',
+                  px: 3,
+                  boxShadow: 'none',
+                  '&:hover': {
+                    boxShadow: 'none',
+                    backgroundColor: 'error.dark'
+                  }
+                }}
+              >
+                Удалить
+              </Button>
+            </DialogActions>
+          </Dialog>
+        )}
       </Box>
     </Container>
   );

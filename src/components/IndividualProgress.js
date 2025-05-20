@@ -53,12 +53,33 @@ const IndividualProgress = ({ child, onEdit }) => {
   const canEdit = user?.role === 'admin' || user?.role === 'psychologist';
   const theme = useTheme();
 
+  console.log('IndividualProgress получил данные:', child);
+
   if (!child) {
     return (
       <StyledCard>
         <CardContent>
           <Typography variant="body1" color="text.secondary">
             Информация о ребенке недоступна
+          </Typography>
+        </CardContent>
+      </StyledCard>
+    );
+  }
+
+  // Проверяем наличие данных прогресса
+  if (!child.progress || typeof child.progress !== 'object') {
+    console.log('Нет данных о прогрессе:', child.progress);
+    return (
+      <StyledCard>
+        <CardContent>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+            <Typography variant="h6">
+              {child.name}
+            </Typography>
+          </Box>
+          <Typography variant="body1" color="text.secondary">
+            Нет данных о прогрессе
           </Typography>
         </CardContent>
       </StyledCard>
@@ -96,6 +117,8 @@ const IndividualProgress = ({ child, onEdit }) => {
     return Math.min(Math.max(numValue * 10, 0), 100);
   };
 
+  console.log('Обработка показателей развития:', developmentParams);
+
   const developmentParamsOnly = developmentParams.filter(param => !param.showInTable);
 
   return (
@@ -103,10 +126,13 @@ const IndividualProgress = ({ child, onEdit }) => {
       <CardContent>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
           <Typography variant="h6">
-            {child.first_name} {child.last_name}
+            {child.name}
           </Typography>
           {canEdit && (
-            <IconButton onClick={() => onEdit(child)}>
+            <IconButton onClick={() => {
+              console.log('Редактирование прогресса:', child.progress);
+              onEdit(child.progress);
+            }}>
               <EditIcon />
             </IconButton>
           )}
@@ -116,6 +142,8 @@ const IndividualProgress = ({ child, onEdit }) => {
         <Box>
           {developmentParamsOnly.map(param => {
             const rawValue = child.progress?.[param.id];
+            console.log(`Значение для ${param.name}:`, rawValue);
+            
             const value = safeParseNumber(rawValue);
             const normalizedValue = normalizeValue(value, param);
 

@@ -84,9 +84,12 @@ const TeacherChildrenList = ({ teacherId, showAttendance = false }) => {
     setError(null);
     
     try {
-      const allChildren = await childrenApi.getAllChildren();
-      // Фильтруем детей по учителю
-      const teacherChildren = allChildren.filter(child => child.teacher_id === teacherId);
+      const allChildren = await childrenApi.getAll({});
+      // Фильтруем детей по учителю, проверяя массив teacher_id
+      const teacherChildren = allChildren.filter(child => 
+        child.group && child.group.teacher_id && 
+        child.group.teacher_id.includes(teacherId)
+      );
       setChildren(teacherChildren);
     } catch (error) {
       setError('Ошибка при загрузке списка детей');

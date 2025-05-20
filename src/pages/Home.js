@@ -24,6 +24,7 @@ import {
   ContactPhone as ContactPhoneIcon
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
 
 const iconMap = {
   'school': SchoolIcon,
@@ -36,6 +37,7 @@ const iconMap = {
 
 const Home = () => {
   const navigate = useNavigate();
+  const { isAuthenticated, checkAuth } = useAuth();
   const [features, setFeatures] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -87,10 +89,8 @@ const Home = () => {
           ...feature,
           icon: iconMap[feature.iconKey] || SchoolIcon
         })));
-        setError(null);
       } catch (err) {
-        console.error('Error:', err);
-        setError(err.message || 'Ошибка при загрузке данных');
+        setError('Ошибка при загрузке данных');
       } finally {
         setLoading(false);
       }
@@ -98,6 +98,14 @@ const Home = () => {
 
     fetchData();
   }, []);
+
+  const handleLoginClick = async () => {
+    if (isAuthenticated) {
+      navigate('/welcome');
+    } else {
+      navigate('/login');
+    }
+  };
 
   return (
     <Box
@@ -191,7 +199,7 @@ const Home = () => {
           <Button
             variant="contained"
             startIcon={<LoginIcon />}
-            onClick={() => navigate('/welcome')}
+            onClick={handleLoginClick}
             sx={{
               borderRadius: '12px',
               px: 3,
@@ -202,7 +210,7 @@ const Home = () => {
               }
             }}
           >
-            Войти
+            {isAuthenticated ? 'Продолжить' : 'Войти'}
           </Button>
         </Stack>
       </Paper>
@@ -264,7 +272,7 @@ const Home = () => {
         {!loading && !error && (
           <Grid container spacing={4}>
             {features.map((feature, index) => (
-              <Grid item xs={12} sm={6} md={4} key={index}>
+              <Grid item xs={12} sm={6} md={4} key={`feature-${feature.title}-${index}`}>
                 <Card
                   sx={{
                     height: 320,

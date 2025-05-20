@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import {
   Box,
@@ -13,7 +13,8 @@ import {
   IconButton,
   Fade,
   useTheme,
-  styled
+  styled,
+  CircularProgress
 } from '@mui/material';
 import {
   Email as EmailIcon,
@@ -65,10 +66,33 @@ const Login = () => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
-  const { login } = useAuth();
+  const { login, isAuthenticated, loading: authLoading } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const theme = useTheme();
   const [loading, setLoading] = useState(false);
+  const initialCheckDone = useRef(false);
+
+  const from = location.state?.from || '/welcome';
+
+  useEffect(() => {
+    // Пропускаем проверку, если она уже была выполнена
+    if (initialCheckDone.current) {
+      return;
+    }
+
+    // Пропускаем проверку, если все еще идет загрузка
+    if (authLoading) {
+      return;
+    }
+
+    // Проверяем только isAuthenticated, не проверяем токен
+    if (isAuthenticated) {
+      navigate('/welcome', { replace: true });
+    }
+
+    initialCheckDone.current = true;
+  }, [authLoading, isAuthenticated, navigate]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -76,15 +100,39 @@ const Login = () => {
     setLoading(true);
 
     try {
-      await login(email, password);
-      navigate('/welcome');
+      if (!email || !password) {
+        throw new Error('Пожалуйста, заполните все поля');
+      }
+
+      const result = await login({ email, password });
+      
+      if (result && result.success) {
+        navigate(from, { replace: true });
+      }
     } catch (err) {
-      console.error('Ошибка входа:', err);
       setError(err.message || 'Ошибка при входе в систему');
     } finally {
       setLoading(false);
     }
   };
+
+  // Показываем загрузку при входе
+  if (loading) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" minHeight="100vh">
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  // Показываем загрузку при проверке аутентификации
+  if (authLoading) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" minHeight="100vh">
+        <CircularProgress />
+      </Box>
+    );
+  }
 
   return (
     <Container component="main" maxWidth="xs">

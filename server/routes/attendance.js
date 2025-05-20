@@ -6,7 +6,7 @@ const { checkRole } = require('../middleware/roleCheck');
 const { body, param, query, validationResult } = require('express-validator');
 const logger = require('../utils/logger');
 const { authenticateToken } = require('../middleware/auth');
-const { validateDate } = require('../utils/validators');
+const { validateDate, validateAttendance } = require('../utils/validators');
 const { Pool } = require('pg');
 
 const pool = new Pool({
@@ -375,6 +375,130 @@ router.get('/by-child/:childId', [
     } catch (error) {
         logger.error('Ошибка при получении посещаемости ребенка:', error);
         res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    }
+});
+
+// Получение посещаемости
+router.get('/', auth, async (req, res) => {
+  try {
+    const { groupId, startDate, endDate } = req.query;
+    logger.info('Запрос на получение посещаемости', { groupId, startDate, endDate });
+    // TODO: Реализовать получение посещаемости из базы данных
+    res.json([]);
+  } catch (error) {
+    logger.error('Ошибка при получении посещаемости:', error);
+    res.status(500).json({ error: 'Ошибка при получении посещаемости' });
+  }
+});
+
+// Отметка посещаемости
+router.post('/mark', [auth, checkRole(['admin', 'teacher'])], async (req, res) => {
+  try {
+    const attendanceData = req.body;
+    logger.info('Запрос на отметку посещаемости', { data: attendanceData });
+
+    const validation = validateAttendance(attendanceData);
+    if (!validation.isValid) {
+      return res.status(400).json({ errors: validation.errors });
+    }
+
+    // TODO: Реализовать сохранение посещаемости в базе данных
+    res.status(201).json(attendanceData);
+  } catch (error) {
+    logger.error('Ошибка при отметке посещаемости:', error);
+    res.status(500).json({ error: 'Ошибка при отметке посещаемости' });
+  }
+});
+
+// Получение посещаемости группы
+router.get('/group/:groupId', auth, async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const { startDate, endDate } = req.query;
+    logger.info('Запрос на получение посещаемости группы', { groupId, startDate, endDate });
+    // TODO: Реализовать получение посещаемости группы из базы данных
+    res.json([]);
+  } catch (error) {
+    logger.error('Ошибка при получении посещаемости группы:', error);
+    res.status(500).json({ error: 'Ошибка при получении посещаемости группы' });
+  }
+});
+
+// Получить посещаемость по группе
+router.get('/group', auth, async (req, res) => {
+    try {
+        const { group_id, start_date, end_date } = req.query;
+        
+        logger.info('GET /attendance/group request', {
+            group_id,
+            start_date,
+            end_date,
+            query_params: req.query
+        });
+
+        if (!group_id || !start_date || !end_date) {
+            return res.status(400).json({
+                error: 'Необходимо указать group_id, start_date и end_date'
+            });
+        }
+
+        const query = `
+            SELECT a.attendance_id, a.child_id, a.date, a.is_present
+            FROM attendance a
+            JOIN children c ON a.child_id = c.child_id
+            WHERE c.group_id = $1
+            AND a.date BETWEEN $2 AND $3
+            ORDER BY a.date, c.name
+        `;
+
+        const result = await db.query(query, [group_id, start_date, end_date]);
+        
+        logger.info('Attendance data retrieved', {
+            count: result.rowCount,
+            sample: result.rows[0]
+        });
+
+        res.json(result.rows);
+    } catch (error) {
+        logger.error('Error in GET /attendance/group', {
+            error: error.message,
+            stack: error.stack
+        });
+        res.status(500).json({
+            error: 'Ошибка при получении данных посещаемости'
+        });
+    }
+});
+
+// Отметить посещаемость
+router.post('/', auth, async (req, res) => {
+    try {
+        const { child_id, date, is_present } = req.body;
+
+        if (!child_id || !date) {
+            return res.status(400).json({
+                error: 'Необходимо указать child_id и date'
+            });
+        }
+
+        const query = `
+            INSERT INTO attendance (child_id, date, is_present)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (child_id, date)
+            DO UPDATE SET is_present = $3
+            RETURNING *
+        `;
+
+        const result = await db.query(query, [child_id, date, is_present]);
+        res.json(result.rows[0]);
+    } catch (error) {
+        logger.error('Error in POST /attendance', {
+            error: error.message,
+            stack: error.stack
+        });
+        res.status(500).json({
+            error: 'Ошибка при сохранении посещаемости'
+        });
     }
 });
 

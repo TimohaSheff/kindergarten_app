@@ -53,7 +53,7 @@ const ChildrenCards = ({ canEdit = false, showOnlyOwnGroup = false }) => {
   useEffect(() => {
     const fetchChildren = async () => {
       try {
-        let childrenData = await childrenApi.getAllChildren();
+        let childrenData = await childrenApi.getAll({});
         
         if (showOnlyOwnGroup && user?.role === 'teacher') {
           childrenData = childrenData.filter(child => child.group === user.group);

@@ -269,7 +269,7 @@ const PaidServicesAttendance = ({ canEdit = false, showOnlyOwnGroup = false, sho
                   'Май', 'Июнь', 'Июль', 'Август',
                   'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
                 ].map((month, index) => (
-                  <MenuItem key={index} value={index}>{month}</MenuItem>
+                  <MenuItem key={`month-${month}-${index}`} value={index}>{month}</MenuItem>
                 ))}
               </Select>
             </FormControl>
@@ -337,7 +337,7 @@ const PaidServicesAttendance = ({ canEdit = false, showOnlyOwnGroup = false, sho
                     
                     return (
                       <TableCell
-                        key={day}
+                        key={`header-day-${day}`}
                         align="center"
                         sx={{
                           fontWeight: 600,
@@ -388,7 +388,7 @@ const PaidServicesAttendance = ({ canEdit = false, showOnlyOwnGroup = false, sho
                           
                           return (
                             <TableCell
-                              key={dayIndex}
+                              key={`day-${child.id}-${dayIndex}`}
                               align="center"
                               sx={{
                                 width: '60px',

@@ -1,7 +1,6 @@
 const { Pool } = require('pg');
+const logger = require('../utils/logger');
 require('dotenv').config();
-
-console.log('Инициализация подключения к базе данных...');
 
 const pool = new Pool({
     user: process.env.DB_USER,
@@ -10,56 +9,91 @@ const pool = new Pool({
     password: process.env.DB_PASSWORD,
     port: process.env.DB_PORT,
     client_encoding: 'UTF8',
-    max: 20,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
+    options: '-c client_encoding=UTF8',
+    connectionTimeoutMillis: 30000,
+    statement_timeout: 60000,
+    query_timeout: 60000,
+    error: (err, client) => {
+        console.error('Database error:', err);
+        if (client) {
+            client.release(true);
+        }
+    }
 });
 
-pool.on('connect', () => {
-    console.log('Новое подключение к базе данных установлено');
+// Добавляем обработчик подключения
+pool.on('connect', (client) => {
+    client.query('SET client_encoding TO UTF8');
+    console.log('Connected to PostgreSQL database with UTF8 encoding');
 });
 
+// Добавляем обработчик ошибок
 pool.on('error', (err) => {
-    console.error('Ошибка в пуле подключений:', err);
+    console.error('Unexpected error on idle client', err);
     process.exit(-1);
 });
 
-pool.connect((err, client, release) => {
-    if (err) {
-        console.error('Error connecting to the database:', err);
-        process.exit(-1);
-    }
-    console.log('Successfully connected to the database');
-    release();
-});
-
 const query = async (text, params) => {
-    const start = Date.now();
-    try {
-        console.log('Executing query...');
-        
-        const res = await pool.query(text, params);
-        const duration = Date.now() - start;
-
-        console.log('Query completed:', {
-            duration,
-            rows: res.rowCount,
-            timestamp: new Date().toISOString()
-        });
-
-        return res;
-    } catch (err) {
-        const duration = Date.now() - start;
-        console.error('Query execution failed:', {
-            duration,
-            error: {
-                message: err.message,
-                code: err.code
-            },
-            timestamp: new Date().toISOString()
-        });
-        throw err;
+    let client;
+    let retries = 3;
+    let lastError;
+    
+    while (retries > 0) {
+        try {
+            client = await pool.connect();
+            await client.query('SET client_encoding TO UTF8');
+            const start = Date.now();
+            const res = await client.query(text, params);
+            const duration = Date.now() - start;
+            
+            logger.debug('Выполнен запрос:', {
+                text,
+                duration,
+                rows: res.rowCount
+            });
+            
+            return res;
+        } catch (err) {
+            lastError = err;
+            retries--;
+            
+            logger.error('Ошибка выполнения запроса:', { 
+                error: err.message,
+                code: err.code,
+                query: text,
+                retriesLeft: retries
+            });
+            
+            // Если ошибка связана с подключением, пытаемся переподключиться
+            if (err.code === 'ECONNREFUSED' || err.code === '57P03' || err.code === '3D000') {
+                logger.info('Попытка переподключения к БД...');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                continue;
+            }
+            
+            // Если это не ошибка подключения, прекращаем попытки
+            if (err.code !== 'ECONNREFUSED' && err.code !== '57P03' && err.code !== '3D000') {
+                throw err;
+            }
+            
+            if (retries === 0) {
+                logger.error('Все попытки подключения исчерпаны:', {
+                    error: err.message,
+                    code: err.code
+                });
+                throw err;
+            }
+            
+            // Ждем перед следующей попыткой
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        } finally {
+            if (client) {
+                client.release();
+            }
+        }
     }
+    
+    throw lastError;
 };
 
 module.exports = {

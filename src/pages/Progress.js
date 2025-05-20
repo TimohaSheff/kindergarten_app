@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import axios from 'axios';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import axios from '../utils/axios';  // Используем наш настроенный экземпляр axios
 import {
   Box,
   Typography,
@@ -59,7 +59,8 @@ import {
   Person as PersonIcon,
   Timeline as TimelineIcon,
   Print as PrintIcon,
-  Download as DownloadIcon
+  Download as DownloadIcon,
+  Refresh as RefreshIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
 import { styled } from '@mui/material/styles';
@@ -80,8 +81,14 @@ import GroupProgress from '../components/GroupProgress';
 import { api, progressApi, groupsApi, childrenApi } from '../api/api';
 import { message } from 'antd';
 import { Chart } from 'chart.js';
+import { Link } from 'react-router-dom';
+import { useOutletContext } from 'react-router-dom';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+// Удаляем определение API_URL, так как используем настроенный axios
+// const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+
+// Удаляем лишний console.log
+// console.log('API URL:', API_URL);
 
 ChartJS.register(
   CategoryScale,
@@ -95,7 +102,7 @@ ChartJS.register(
 
 const StyledCard = styled(Card)(({ theme }) => ({
   height: '100%',
-  borderRadius: '24px',
+  borderRadius: '16px',
   background: 'rgba(255, 255, 255, 0.9)',
   backdropFilter: 'blur(20px)',
   boxShadow: '0 8px 32px rgba(0, 0, 0, 0.08)',
@@ -116,55 +123,31 @@ const StyledRating = styled(Rating)(({ theme }) => ({
 }));
 
 const getQuarterFromDate = (dateString) => {
-  if (!dateString) {
-    console.warn('Дата не указана, используется текущая дата');
-    return { quarter: 'q1' };
-  }
+  if (!dateString) return null;
   
-  try {
-    const cleanDateString = dateString.split('T')[0];
-    const date = new Date(cleanDateString);
-    
-    if (isNaN(date.getTime())) {
-      console.warn('Некорректный формат даты:', dateString);
-      return { quarter: 'q1' };
-    }
-    
-    const month = date.getMonth() + 1; // 1-12
-    
-    // Определяем квартал на основе месяца
-    let quarter;
-    if (month === 1) {
-      quarter = 'q1';  // Январь
-    } else if (month === 4) {
-      quarter = 'q2';  // Апрель
-    } else if (month === 7) {
-      quarter = 'q3';  // Июль
-    } else if (month === 10) {
-      quarter = 'q4';  // Октябрь
-    } else {
-      // Для других месяцев определяем квартал по диапазону
-      if (month <= 3) quarter = 'q1';
-      else if (month <= 6) quarter = 'q2';
-      else if (month <= 9) quarter = 'q3';
-      else quarter = 'q4';
-    }
-    
-    return { quarter };
-  } catch (err) {
-    console.error('Ошибка при определении квартала:', err, 'для даты:', dateString);
-    return { quarter: 'q1' };
-  }
+  const month = parseInt(dateString.split('-')[1]);
+  
+  if (month >= 1 && month <= 3) return 'q1';
+  if (month >= 4 && month <= 6) return 'q2';
+  if (month >= 7 && month <= 9) return 'q3';
+  if (month >= 10 && month <= 12) return 'q4';
+  
+  return null;
 };
 
 // Функция для получения стандартной даты квартала
 const getStandardQuarterDate = (year, quarter) => {
-  switch(quarter) {
-    case 'q1': return `${year}-01-01`;
-    case 'q2': return `${year}-04-01`;
-    case 'q3': return `${year}-07-01`;
-    case 'q4': return `${year}-10-01`;
-    default: return `${year}-01-01`;
+  switch (quarter) {
+    case 'q1':
+      return `${year}-01-01`;
+    case 'q2':
+      return `${year}-04-01`;
+    case 'q3':
+      return `${year}-07-01`;
+    case 'q4':
+      return `${year}-10-01`;
+    default:
+      return null;
   }
 };
 
@@ -190,12 +173,13 @@ const quarters = [
 const Progress = () => {
   const { user } = useAuth();
   const theme = useTheme();
+  const { PageTitle } = useOutletContext();
   const [selectedTab, setSelectedTab] = useState(0);
   const [selectedQuarter, setSelectedQuarter] = useState('');
   const [selectedGroup, setSelectedGroup] = useState('');
   const [selectedChild, setSelectedChild] = useState(null);
   const [openDialog, setOpenDialog] = useState(false);
-  const [progressData, setProgressData] = useState(null);
+  const [progressData, setProgressData] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [groups, setGroups] = useState([]);
@@ -208,16 +192,348 @@ const Progress = () => {
   const [selectedYears, setSelectedYears] = useState([new Date().getFullYear().toString()]);
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [allGroupsProgress, setAllGroupsProgress] = useState(null);
-  const [message, setMessage] = useState(null);
   const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState('');
+  const [snackbarSeverity, setSnackbarSeverity] = useState('info');
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const isMounted = useRef(true);
 
-  const canEdit = ['admin', 'psychologist'].includes(user?.role);
+  const groupProgressByQuarters = (progressData) => {
+    if (!progressData || !Array.isArray(progressData)) {
+        return {};
+    }
+
+    const grouped = {};
+    
+    progressData.forEach(report => {
+        const [year, month] = report.report_date.split('-');
+        const monthNum = parseInt(month);
+        
+        // Определяем квартал
+        let quarter;
+        if (monthNum <= 3) quarter = 'q1';
+        else if (monthNum <= 6) quarter = 'q2';
+        else if (monthNum <= 9) quarter = 'q3';
+        else quarter = 'q4';
+        
+        // Создаем структуру для года если её нет
+        if (!grouped[year]) {
+            grouped[year] = {
+                q1: null,
+                q2: null,
+                q3: null,
+                q4: null
+            };
+        }
+        
+        // Сохраняем последний отчет за квартал
+        grouped[year][quarter] = report;
+    });
+    
+    return grouped;
+};
+
+  // Выделим загрузку детей в отдельную функцию, которую можно вызывать повторно
+  const loadChildrenForGroup = useCallback(async (groupId) => {
+    try {
+      console.log('Запрос детей для группы:', groupId);
+      
+      const response = await axios.get(`/groups/${groupId}/children`);
+      console.log('Ответ сервера при загрузке детей:', {
+        status: response.status,
+        headers: response.headers,
+        data: response.data
+      });
+      
+      // Проверяем наличие данных в ответе
+      if (!Array.isArray(response.data)) {
+        console.error('Ответ сервера не является массивом:', response.data);
+        setChildren([]);
+        return;
+      }
+      
+      // ID выбранной группы для фильтрации
+      console.log('ID выбранной группы:', groupId);
+      console.log('Количество детей в ответе:', response.data.length);
+      
+      // Нормализуем данные детей
+      const normalizedChildren = response.data.map(child => {
+        console.log('Исходные данные ребенка:', child);
+        const normalizedChild = {
+          id: child.child_id,
+          child_id: child.child_id,
+          name: child.name,
+          group_id: parseInt(groupId),
+          original_group_id: parseInt(groupId),
+          services: child.service_names || [],
+          parent: child.parent_first_name && child.parent_last_name ? {
+            id: child.parent_id,
+            name: `${child.parent_first_name} ${child.parent_last_name}`,
+            firstName: child.parent_first_name,
+            lastName: child.parent_last_name
+          } : null
+        };
+        console.log('Нормализованные данные ребенка:', normalizedChild);
+        return normalizedChild;
+      });
+      
+      console.log('Все нормализованные данные детей:', normalizedChildren);
+      setChildren(normalizedChildren);
+      
+    } catch (error) {
+      console.error('Ошибка при загрузке детей:', error);
+      console.error('Детали ошибки:', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status,
+        config: error.config
+      });
+      setChildren([]);
+    }
+  }, []);
+  
+  // Вспомогательная функция для очистки данных
+  const clearChildrenData = useCallback(() => {
+    setChildren([]);
+    setSelectedChild(null);
+    setChildrenProgress({});
+  }, []);
+
+  // Обновляем useEffect для загрузки данных
+  useEffect(() => {
+    const fetchInitialData = async () => {
+      if (!user) {
+        console.log('Нет данных пользователя, пропускаем загрузку');
+        return;
+      }
+
+      const token = localStorage.getItem('token');
+      if (!token) {
+        console.error('Отсутствует токен авторизации');
+        setError('Необходима авторизация');
+        return;
+      }
+
+      try {
+        setLoading(true);
+        setError(null);
+        
+        console.log('Начало загрузки данных:', {
+          userRole: user.role,
+          token: 'Присутствует',
+          apiConfig: {
+            baseURL: axios.defaults.baseURL,
+            headers: axios.defaults.headers
+          }
+        });
+        
+        if (user.role === 'parent') {
+          // Для родителя загружаем только его детей
+          console.log('Загрузка данных для родителя:', {
+              userId: user.user_id,
+              userRole: user.role,
+              token: localStorage.getItem('token') ? 'Присутствует' : 'Отсутствует',
+              user: user // Добавляем полные данные пользователя для отладки
+          });
+          
+          try {
+              const token = localStorage.getItem('token');
+              if (!token) {
+                  throw new Error('Отсутствует токен авторизации');
+              }
+
+              // Получаем список детей родителя
+              console.log('Запрос детей для родителя:', {
+                  endpoint: '/children',
+                  params: { parent_id: user.user_id },
+                  headers: {
+                      'Authorization': `Bearer ${token.substring(0, 10)}...`,
+                      'Content-Type': 'application/json'
+                  }
+              });
+
+              const childrenResponse = await childrenApi.getAll({ parent_id: user.user_id });
+          console.log('Ответ при загрузке детей родителя:', {
+            status: childrenResponse?.status,
+                  data: childrenResponse?.data,
+                  requestedParentId: user.user_id,
+                  headers: childrenResponse?.headers
+          });
+          
+              if (!childrenResponse || !childrenResponse.data) {
+            throw new Error('Не удалось получить данные о детях');
+          }
+          
+              // Создаем Set для хранения уникальных ID детей
+              const uniqueChildIds = new Set();
+              const validChildren = childrenResponse.data
+                  .filter(child => {
+                      const isValid = String(child.parent_id) === String(user.user_id);
+                      const isDuplicate = uniqueChildIds.has(child.child_id);
+                      
+                      if (isValid && !isDuplicate) {
+                          uniqueChildIds.add(child.child_id);
+                          return true;
+                      }
+                      return false;
+                  })
+                  .map(child => ({
+                      ...child,
+                      child_id: child.child_id,
+                      parent_id: String(child.parent_id)
+                  }));
+              
+              console.log('Отфильтрованные уникальные дети:', validChildren);
+              
+              if (validChildren.length === 0) {
+                  console.log('У родителя нет привязанных детей:', {
+                      receivedChildren: childrenResponse.data,
+                      parentId: user.user_id
+                  });
+                  setChildren([]);
+                  return;
+              }
+              
+              setChildren(validChildren);
+              
+              // Если есть дети, автоматически выбираем первого и загружаем его прогресс
+              if (validChildren.length > 0) {
+                  const firstChild = validChildren[0];
+                  console.log('Выбран первый ребенок:', {
+                      childId: firstChild.child_id,
+                      childName: firstChild.name,
+                      parentId: firstChild.parent_id,
+                      userId: user.user_id,
+                      token: `Bearer ${token.substring(0, 10)}...`
+                  });
+                  
+                  setSelectedChild(firstChild);
+                  
+                  try {
+                      console.log('Попытка загрузки прогресса для ребенка:', {
+                          childId: firstChild.child_id,
+                          endpoint: `/progress/child/${firstChild.child_id}`,
+                          token: `Bearer ${token.substring(0, 10)}...`,
+                          parentId: user.user_id,
+                          headers: {
+                              'Authorization': `Bearer ${token.substring(0, 10)}...`,
+                              'Content-Type': 'application/json'
+                          }
+                      });
+                      
+                      const progressResponse = await api.progress.get(firstChild.child_id);
+                      console.log('Успешный ответ при загрузке прогресса:', {
+              status: progressResponse?.status,
+              data: progressResponse?.data
+            });
+            
+            if (progressResponse) {
+                          const groupedProgress = groupProgressByQuarters(progressResponse.data);
+              setProgressData(groupedProgress);
+            }
+                  } catch (error) {
+                      console.error('Ошибка при загрузке прогресса ребенка:', {
+                          error,
+                          response: error.response?.data,
+                          status: error.response?.status,
+                          config: error.config
+                      });
+                      
+                      if (error.response?.status === 403) {
+                          setError('У вас нет прав для просмотра прогресса этого ребенка. ' +
+                                  'Убедитесь, что вы являетесь родителем данного ребенка.');
+                      } else {
+                          setError(`Ошибка при загрузке прогресса: ${error.message}`);
+                      }
+                  }
+              }
+          } catch (error) {
+              console.error('Ошибка при загрузке данных для родителя:', {
+                  error,
+                  response: error.response?.data,
+                  status: error.response?.status,
+                  config: error.config
+              });
+              
+              if (error.response) {
+                  console.error('Ответ сервера:', error.response.data);
+                  setError(`Ошибка при загрузке данных: ${error.response.data.message || error.message}`);
+              } else {
+                  setError('Ошибка при загрузке данных: ' + error.message);
+              }
+          }
+        } else {
+          // Для остальных ролей загружаем группы
+          try {
+            console.log('Загрузка данных о группах...');
+            const response = await groupsApi.getAll();
+            console.log('Ответ при загрузке групп:', {
+              status: response?.status,
+              data: response?.data,
+              headers: response?.headers
+            });
+            
+            if (!response || !response.data) {
+              throw new Error('Не удалось получить данные о группах');
+            }
+            
+            const groupsResponse = response.data;
+            
+            if (!Array.isArray(groupsResponse)) {
+              throw new Error('Неверный формат данных о группах');
+            }
+            
+            if (groupsResponse.length === 0) {
+              console.log('Список групп пуст');
+            }
+            
+            setGroups(groupsResponse);
+            
+            // Если есть группы, загружаем данные первой группы
+            if (groupsResponse.length > 0) {
+              const firstGroup = groupsResponse[0];
+              setSelectedGroup(firstGroup.group_id);
+              await loadChildrenForGroup(firstGroup.group_id);
+            }
+          } catch (groupError) {
+            console.error('Ошибка при загрузке групп:', {
+              message: groupError.message,
+              response: groupError.response?.data,
+              status: groupError.response?.status
+            });
+            setGroups([]);
+            setError('Ошибка загрузки групп: ' + (groupError.message || 'неизвестная ошибка'));
+          }
+        }
+      } catch (err) {
+        console.error('Ошибка при загрузке данных:', {
+          message: err.message,
+          response: err.response?.data,
+          status: err.response?.status
+        });
+        setError(err.message || 'Произошла ошибка при загрузке данных');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchInitialData();
+  }, [user, loadChildrenForGroup]);
+
+  const canEdit = user && ['admin', 'psychologist'].includes(user.role);
+  console.log('Права на редактирование:', { userRole: user?.role, canEdit });
 
   const availableYears = ['2023', '2024', '2025'];
 
   // Удаляем все дублирующиеся объявления getAllGroupsAverages и оставляем только одно
   const getAllGroupsAverages = (selectedYear, selectedQuarter) => {
-    if (!selectedYear || !selectedQuarter) return null;
+    if (!selectedYear || !selectedQuarter) {
+      console.log('Нет данных для расчета общих средних:', { selectedYear, selectedQuarter });
+      return null;
+    }
+
+    console.log('Вычисляем общие средние, год:', selectedYear, 'квартал:', selectedQuarter);
+    console.log('Данные прогресса:', childrenProgress);
 
     const groupSums = {};
     const groupCounts = {};
@@ -227,13 +543,13 @@ const Progress = () => {
       groupCounts[param.id] = 0;
     });
 
-    // Получаем средние значения для каждой группы
-    groups.forEach(group => {
-      const groupAverages = getGroupAverages(group.group_id, selectedYear, selectedQuarter);
-      if (groupAverages) {
+    // Перебираем все данные прогресса
+    Object.values(childrenProgress).forEach(childProgress => {
+      if (childProgress[selectedYear]?.[selectedQuarter]) {
+        const quarterData = childProgress[selectedYear][selectedQuarter];
         developmentParams.forEach(param => {
-          const value = groupAverages[param.id];
-          if (typeof value === 'number' && !isNaN(value) && value > 0) {
+          const value = Number(quarterData[param.id]);
+          if (!isNaN(value) && value > 0) {
             groupSums[param.id] += value;
             groupCounts[param.id]++;
           }
@@ -251,8 +567,9 @@ const Progress = () => {
       }
     });
 
+    console.log('Общие средние значения:', totalAverages);
     return totalAverages;
-  };
+};
 
   // Обработчик изменения группы
   const handleGroupChange = (event) => {
@@ -309,8 +626,39 @@ const Progress = () => {
     console.log('Фильтрация детей, выбранная группа:', selectedGroup);
     console.log('Общее количество детей:', children.length);
     
+    if (!user) {
+        console.warn('Attempt to filter children without user');
+        return [];
+    }
+    
+    if (user.role === 'parent') {
+        // Используем Set для уникальных ID
+        const uniqueIds = new Set();
+        const filtered = children.filter(child => {
+            const isParentChild = String(child.parent_id) === String(user.user_id);
+            const isDuplicate = uniqueIds.has(child.child_id);
+            
+            if (isParentChild && !isDuplicate) {
+                uniqueIds.add(child.child_id);
+                return true;
+            }
+            return false;
+        });
+        
+        console.log('Фильтр по родителю, найдено уникальных детей:', filtered.length);
+        return filtered;
+    }
+    
+    // Остальная логика фильтрации остается без изменений
+    // ... existing code ...
+    // Проверка на существование пользователя
+    if (!user) {
+      console.warn('Attempt to filter children without user');
+      return [];
+    }
+    
     // Фильтр для родителя
-    if (user?.role === 'parent') {
+    if (user.role === 'parent') {
       const filtered = children.filter(child => child.parent_id === user.user_id);
       console.log('Фильтр по родителю, найдено детей:', filtered.length);
       return filtered;
@@ -361,201 +709,6 @@ const Progress = () => {
   }, [children, selectedGroup, user]);
 
   useEffect(() => {
-    const fetchGroups = async () => {
-      try {
-        setLoading(true);
-        
-        // Проверяем доступность API
-        const apiMethods = Object.keys(api || {});
-        const groupApiMethods = Object.keys(groupsApi || {});
-        
-        let groupsData;
-        let apiUsed = '';
-        
-        // Пробуем получить данные о группах
-        try {
-          if (groupsApi && groupsApi.getGroups) {
-            groupsData = await groupsApi.getGroups();
-            apiUsed = 'groupsApi.getGroups';
-          } else {
-            throw new Error('API для получения групп не найдено');
-          }
-        } catch (err) {
-          console.error('Ошибка при вызове API групп:', err);
-          throw err; // Пробрасываем ошибку дальше
-        }
-
-        // Проверка корректности структуры данных
-        if (!groupsData) {
-          throw new Error('Не получены данные о группах');
-        }
-        
-        // Нормализация данных о группах
-        let normalizedGroups = [];
-        
-        if (Array.isArray(groupsData)) {
-          // Если получен массив групп
-          normalizedGroups = groupsData.map(group => {
-            // Проверяем наличие необходимых полей
-            if (!group) return null;
-            
-            const groupId = group.group_id || group.id || group._id;
-            if (!groupId) {
-              console.warn('Группа без ID:', group);
-              return null;
-            }
-            
-            const groupName = group.name || group.group_name || group.title || 'Группа без названия';
-            
-            return {
-              group_id: groupId,
-              name: groupName
-            };
-          }).filter(Boolean); // Удаляем null элементы
-        } else if (typeof groupsData === 'object') {
-          // Если получен объект с группами
-          normalizedGroups = Object.values(groupsData)
-            .filter(Boolean)
-            .map(group => {
-              if (!group) return null;
-              
-              const groupId = group.group_id || group.id || group._id;
-              if (!groupId) {
-                console.warn('Группа без ID:', group);
-                return null;
-              }
-              
-              const groupName = group.name || group.group_name || group.title || 'Группа без названия';
-              
-              return {
-                group_id: groupId,
-                name: groupName
-              };
-            }).filter(Boolean); // Удаляем null элементы
-        } else {
-          throw new Error('Некорректный формат данных для групп: ' + typeof groupsData);
-        }
-
-        if (normalizedGroups.length === 0) {
-          throw new Error('Не найдено ни одной валидной группы');
-        }
-
-        setGroups(normalizedGroups);
-      } catch (err) {
-        console.error('Ошибка при загрузке групп:', err);
-        setError(err.message || 'Ошибка при загрузке групп');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchGroups();
-  }, []);
-
-  // Выделим загрузку детей в отдельную функцию, которую можно вызывать повторно
-  const loadChildrenForGroup = useCallback(async (groupId) => {
-    if (!groupId) {
-      return;
-    }
-    
-    try {
-      setLoading(true);
-      const token = localStorage.getItem('token');
-      
-      let childrenData = [];
-      
-      try {
-        const response = await axios.get(`${API_URL}/children`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          params: {
-            group_id: groupId
-          }
-        });
-        childrenData = response.data;
-      } catch (err) {
-        console.error('Ошибка при получении детей через API:', err);
-        throw err;
-      }
-      
-      // Проверка данных
-      if (!Array.isArray(childrenData)) {
-        console.warn('Полученные данные не являются массивом, преобразуем:', typeof childrenData);
-        if (typeof childrenData === 'object') {
-          childrenData = Object.values(childrenData).filter(Boolean);
-        } else {
-          throw new Error(`Некорректные данные о детях: ${typeof childrenData}`);
-        }
-      }
-      
-      // Нормализация данных детей
-      const selectedGroupId = parseInt(groupId);
-      
-      const normalizedChildren = childrenData.map(child => {
-          if (!child) return null;
-          
-          const childId = child.child_id || child.id || child._id;
-          if (!childId) {
-            console.warn('Ребенок без ID:', child);
-            return null;
-          }
-          
-          // Формируем имя
-          let fullName = '';
-          if (child.name && child.surname) {
-            fullName = `${child.surname} ${child.name}`;
-            if (child.patronymic) fullName += ` ${child.patronymic}`;
-          } else if (child.fullName) {
-            fullName = child.fullName;
-          } else if (child.firstname && child.lastname) {
-            fullName = `${child.lastname} ${child.firstname}`;
-          } else {
-            fullName = child.name || `Ребенок #${childId || 'без ID'}`;
-          }
-          
-          // Определяем правильный ID группы
-          const childGroupId = child.group_id || child.groupId;
-          
-          return {
-            child_id: childId,
-            name: fullName,
-            // Записываем оригинальный ID группы
-            original_group_id: childGroupId,
-            // Если у ребенка нет группы в данных API, устанавливаем выбранную группу
-            group_id: childGroupId || selectedGroupId,
-            ...Object.entries(child)
-              .filter(([key]) => !['child_id', 'id', '_id', 'group_id', 'groupId', 'name', 'surname', 'patronymic', 'fullName'].includes(key))
-              .reduce((acc, [key, value]) => {
-                acc[key] = value;
-                return acc;
-              }, {})
-          };
-      }).filter(Boolean); // Удаляем null значения
-      
-      // Устанавливаем состояние
-      setChildren(normalizedChildren);
-      
-      return normalizedChildren;
-    } catch (err) {
-      console.error('Ошибка при загрузке детей:', err);
-      setError(`Ошибка при загрузке детей: ${err.message}`);
-      return [];
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-  
-  // Вспомогательная функция для очистки данных
-  const clearChildrenData = useCallback(() => {
-    setChildren([]);
-    setSelectedChild(null);
-    setChildrenProgress({});
-  }, []);
-  
-  // Используем функцию loadChildrenForGroup в useEffect и при выборе группы
-  useEffect(() => {
     if (selectedGroup) {
       clearChildrenData();
       loadChildrenForGroup(selectedGroup).then(async (loadedChildren) => {
@@ -571,260 +724,535 @@ const Progress = () => {
   
   const fetchChildProgress = async (childId) => {
     try {
-      setLoading(true);
-      const token = localStorage.getItem('token');
-      
-      if (!childId) {
-        throw new Error('ID ребенка не указан');
-      }
-      
-      const response = await axios.get(`${API_URL}/progress/child/${childId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (!response.data) {
-        throw new Error('Нет данных в ответе');
-      }
-
-      let reports = [];
-      if (Array.isArray(response.data)) {
-        reports = response.data;
-      } else if (response.data.progress && Array.isArray(response.data.progress)) {
-        reports = response.data.progress;
-      } else if (response.data.reports && Array.isArray(response.data.reports)) {
-        reports = response.data.reports;
-      }
-
-      if (reports.length === 0) {
-        setProgress({});
-        setChildrenProgress(prev => ({
-          ...prev,
-          [childId]: {}
-        }));
-        setLoading(false);
-        return;
-      }
-
-      // Группируем прогресс по годам и кварталам
-      const progressByYearAndQuarter = {};
-
-      reports.forEach(report => {
-        if (!report.report_date) return;
-        
-        const reportDate = new Date(report.report_date);
-        if (isNaN(reportDate.getTime())) {
-          console.warn('Некорректная дата:', report.report_date);
-          return;
-        }
-        
-        const year = reportDate.getFullYear().toString();
-        const month = reportDate.getMonth() + 1; // 1-12
-
-        // Определяем квартал по месяцу точно как в БД
-        let quarter;
-        if (month === 1) quarter = 'q1';
-        else if (month === 4) quarter = 'q2';
-        else if (month === 7) quarter = 'q3';
-        else if (month === 10) quarter = 'q4';
-        else return; // Пропускаем записи с другими месяцами
-
-        if (!progressByYearAndQuarter[year]) {
-          progressByYearAndQuarter[year] = {};
-        }
-
-        // Сохраняем отчет
-        const normalizedReport = {
-          report_id: report.report_id,
-          report_date: report.report_date,
-          notes: report.notes || '',
-          details: report.details || '',
-          year: parseInt(year)
-        };
-        
-        developmentParams.forEach(param => {
-          const value = parseFloat(report[param.id]);
-          normalizedReport[param.id] = isNaN(value) ? 0 : value;
+        console.log('Загрузка прогресса для ребенка:', {
+            childId,
+            childIdType: typeof childId,
+            user: {
+                id: user.user_id,
+                idType: typeof user.user_id,
+                role: user.role
+            }
         });
         
-        progressByYearAndQuarter[year][quarter] = normalizedReport;
-      });
+        // Проверяем права доступа
+        if (user.role === 'parent') {
+            // Проверяем, есть ли ребенок в списке детей родителя
+            const isParentChild = children.some(child => {
+                const childMatch = Number(child.child_id) === Number(childId);
+                const parentMatch = Number(child.parent_id) === Number(user.user_id);
+                
+                console.log('Проверка соответствия:', {
+                    child: {
+                        id: child.child_id,
+                        type: typeof child.child_id,
+                        parentId: child.parent_id,
+                        parentIdType: typeof child.parent_id
+                    },
+                    user: {
+                        id: user.user_id,
+                        type: typeof user.user_id
+                    },
+                    childMatch,
+                    parentMatch
+                });
+                
+                return childMatch && parentMatch;
+            });
+            
+            if (!isParentChild) {
+                console.error('Попытка доступа к прогрессу чужого ребенка:', {
+                    requestedChildId: childId,
+                    userId: user.user_id,
+                    availableChildren: children.map(c => ({
+                        id: c.child_id,
+                        parentId: c.parent_id
+                    }))
+                });
+                throw new Error('У вас нет прав для просмотра прогресса этого ребенка');
+            }
+        }
 
-      console.log('Обработанный прогресс:', progressByYearAndQuarter);
+        const response = await api.progress.get(childId);
+        
+        console.log('Ответ сервера при загрузке прогресса:', {
+            status: response.status,
+            headers: response.headers,
+            data: response.data
+        });
 
-      setProgress(progressByYearAndQuarter);
-      setChildrenProgress(prev => ({
-        ...prev,
-        [childId]: progressByYearAndQuarter
-      }));
+        // Проверяем, что данные получены
+        if (!response || !response.data) {
+            console.warn('Нет данных прогресса для ребенка:', childId);
+            return {
+                [new Date().getFullYear().toString()]: {
+                    q1: null,
+                    q2: null,
+                    q3: null,
+                    q4: null
+                }
+            };
+        }
+
+        // Если данные уже в нужном формате по годам и кварталам
+        if (response.data && typeof response.data === 'object' && !Array.isArray(response.data)) {
+            console.log('Данные уже в нужном формате:', response.data);
+            
+            // Проверяем и нормализуем данные каждого квартала
+            Object.keys(response.data).forEach(year => {
+                Object.keys(response.data[year]).forEach(quarter => {
+                    const quarterData = response.data[year][quarter];
+                    if (quarterData && typeof quarterData === 'object') {
+                        response.data[year][quarter] = {
+                            report_id: quarterData.report_id,
+                            report_date: quarterData.report_date,
+                            details: quarterData.details || '',
+                            active_speech: Number(quarterData.active_speech) || 0,
+                            games: Number(quarterData.games) || 0,
+                            art_activity: Number(quarterData.art_activity) || 0,
+                            constructive_activity: Number(quarterData.constructive_activity) || 0,
+                            sensory_development: Number(quarterData.sensory_development) || 0,
+                            movement_skills: Number(quarterData.movement_skills) || 0,
+                            height_cm: Number(quarterData.height_cm) || 0,
+                            weight_kg: Number(quarterData.weight_kg) || 0
+                        };
+                    }
+                });
+            });
+
+            // Добавляем текущий год, если его нет
+            const currentYear = new Date().getFullYear().toString();
+            if (!response.data[currentYear]) {
+                response.data[currentYear] = {
+                    q1: null,
+                    q2: null,
+                    q3: null,
+                    q4: null
+                };
+            }
+
+            console.log('Нормализованные данные прогресса:', response.data);
+            return response.data;
+        }
+
+        // Если данные пришли в виде массива отчетов
+        const progressData = Array.isArray(response.data) ? response.data : [response.data];
+        console.log('Полученные данные прогресса:', progressData);
+        
+        const progressByYear = {};
+        
+        progressData.forEach(report => {
+            if (!report?.report_date) {
+                console.warn('Пропущен отчет без даты:', report);
+                return;
+            }
+
+            const [year, month] = report.report_date.split('-');
+            const monthNum = parseInt(month);
+            
+            // Определяем квартал
+            let quarter;
+            if (monthNum <= 3) quarter = 'q1';
+            else if (monthNum <= 6) quarter = 'q2';
+            else if (monthNum <= 9) quarter = 'q3';
+            else quarter = 'q4';
+            
+            // Создаем структуру для года, если её нет
+            if (!progressByYear[year]) {
+                progressByYear[year] = {
+                    q1: null,
+                    q2: null,
+                    q3: null,
+                    q4: null
+                };
+            }
+            
+            // Нормализуем отчет
+            const normalizedReport = {
+                report_id: report.report_id,
+                report_date: report.report_date,
+                details: report.details || '',
+                active_speech: Number(report.active_speech) || 0,
+                games: Number(report.games) || 0,
+                art_activity: Number(report.art_activity) || 0,
+                constructive_activity: Number(report.constructive_activity) || 0,
+                sensory_development: Number(report.sensory_development) || 0,
+                movement_skills: Number(report.movement_skills) || 0,
+                height_cm: Number(report.height_cm) || 0,
+                weight_kg: Number(report.weight_kg) || 0
+            };
+            
+            console.log(`Добавлен отчет за ${year} год, ${quarter} квартал:`, normalizedReport);
+            progressByYear[year][quarter] = normalizedReport;
+        });
+
+        // Добавляем текущий год, если его нет
+        const currentYear = new Date().getFullYear().toString();
+        if (!progressByYear[currentYear]) {
+            progressByYear[currentYear] = {
+                q1: null,
+                q2: null,
+                q3: null,
+                q4: null
+            };
+        }
+
+        console.log('Итоговая структура прогресса:', progressByYear);
+        return progressByYear;
 
     } catch (error) {
-      console.error('Ошибка при загрузке прогресса:', error);
-      setError(error.message || 'Не удалось загрузить данные прогресса');
-      setProgress({});
-      setChildrenProgress(prev => ({
-        ...prev,
-        [childId]: {}
-      }));
-    } finally {
-      setLoading(false);
+        console.error('Ошибка при загрузке прогресса:', error);
+        console.error('Детали ошибки:', {
+            message: error.message,
+            response: error.response?.data,
+            status: error.response?.status,
+            config: error.config
+        });
+        setError(`Ошибка при загрузке прогресса: ${error.message}`);
+        return {
+            [new Date().getFullYear().toString()]: {
+                q1: null,
+                q2: null,
+                q3: null,
+                q4: null
+            }
+        };
     }
-  };
+};
+
+  // Обновляем useEffect для загрузки прогресса при изменении квартала или года
+  useEffect(() => {
+    const loadProgressData = async () => {
+      if (selectedQuarter && selectedYears[0] && children.length > 0) {
+        console.log('Начало загрузки прогресса:', {
+            selectedQuarter,
+            selectedYear: selectedYears[0],
+            children
+        });
+        
+        // Загружаем прогресс только для тех детей, для которых его еще нет
+        for (const child of children) {
+          try {
+                console.log('Проверка прогресса для ребенка:', {
+                    childId: child.child_id,
+                    childName: child.name,
+                    hasProgress: !!childrenProgress[child.child_id]
+                });
+                
+            if (!childrenProgress[child.child_id]) {
+              console.log('Загрузка прогресса для ребенка:', child.child_id);
+                    const response = await api.progress.get(child.child_id);
+                    console.log('Получены данные прогресса:', response.data);
+              
+                    if (response && response.data) {
+                        // Обновляем состояние с новыми данными
+                        setChildrenProgress(prev => {
+                            const newState = {
+                ...prev,
+                                [child.child_id]: response.data
+                            };
+                            console.log('Обновление состояния childrenProgress:', newState);
+                            return newState;
+                        });
+                        
+                        // Если это текущий выбранный ребенок, обновляем progressData
+                        if (selectedChild && selectedChild.child_id === child.child_id) {
+                            console.log('Обновление progressData для текущего ребенка:', response.data);
+                            setProgressData(response.data);
+                        }
+                    }
+            }
+          } catch (error) {
+                console.error('Ошибка при загрузке прогресса для ребенка:', {
+                    childId: child.child_id,
+                    error: error.message
+                });
+          }
+        }
+      }
+    };
+
+    loadProgressData();
+  }, [selectedQuarter, selectedYears, children, selectedChild]);
 
   const handleChildSelect = async (child) => {
     try {
-      if (!child || !child.child_id) {
-        throw new Error('Некорректные данные ребенка');
-      }
-      
-      // Устанавливаем выбранного ребенка
-      setSelectedChild(child);
-      
-      // Загружаем прогресс ребенка, если его еще нет в состоянии
-      if (!childrenProgress[child.child_id]) {
-        await fetchChildProgress(child.child_id);
-      }
+        if (!child || !child.child_id) {
+            throw new Error('Некорректные данные ребенка');
+        }
+        
+        console.log('Выбран ребенок:', child);
+        setSelectedChild(child);
+        
+        // Проверяем наличие данных в кэше
+        if (childrenProgress[child.child_id]) {
+            console.log('Используем кэшированные данные:', childrenProgress[child.child_id]);
+            const cachedData = childrenProgress[child.child_id];
+            
+            // Обновляем год и квартал на основе кэшированных данных
+            const years = Object.keys(cachedData);
+            if (years.length > 0) {
+                const latestYear = Math.max(...years);
+                setSelectedYears([latestYear.toString()]);
+                
+                const quarters = Object.keys(cachedData[latestYear]);
+                const availableQuarter = quarters.find(q => cachedData[latestYear][q] !== null);
+                if (availableQuarter) {
+                    setSelectedQuarter(availableQuarter);
+                }
+            }
+            
+            setProgressData(cachedData);
+        } else {
+            // Если данных нет, загружаем их
+            console.log('Загружаем данные для ребенка:', child.child_id);
+            const response = await api.progress.get(child.child_id);
+            console.log('Получен ответ:', response);
+            
+            if (response?.data) {
+                console.log('Полученные данные:', response.data);
+                
+                // Преобразуем данные в нужный формат, если они еще не в нем
+                const formattedData = response.data;
+                
+                // Обновляем год и квартал
+                const years = Object.keys(formattedData);
+                console.log('Доступные годы:', years);
+                
+                if (years.length > 0) {
+                    const latestYear = Math.max(...years);
+                    console.log('Выбран год:', latestYear);
+                    setSelectedYears([latestYear.toString()]);
+                    
+                    const quarters = Object.keys(formattedData[latestYear]);
+                    const availableQuarter = quarters.find(q => formattedData[latestYear][q] !== null);
+                    if (availableQuarter) {
+                        console.log('Выбран квартал:', availableQuarter);
+                        setSelectedQuarter(availableQuarter);
+                    }
+                }
+                
+                // Сохраняем данные
+                console.log('Сохраняем данные:', formattedData);
+                setProgressData(formattedData);
+                setChildrenProgress(prev => ({
+                    ...prev,
+                    [child.child_id]: formattedData
+                }));
+            }
+        }
+        
     } catch (err) {
-      console.error('Error selecting child:', err);
-      setError(err.message || 'Ошибка при выборе ребенка');
-      setSnackbar({
-        open: true,
-        message: err.message || 'Ошибка при выборе ребенка',
-        severity: 'error'
-      });
+        console.error('Ошибка при выборе ребенка:', err);
+        setError(err.message);
+        setSnackbar({
+            open: true,
+            message: err.message,
+            severity: 'error'
+        });
+    }
+};
+
+  // Вспомогательная функция для форматирования даты
+  const formatDateForInput = (dateString) => {
+    if (!dateString) return '';
+    try {
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) return '';
+      
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    } catch (error) {
+      console.error('Ошибка форматирования даты:', error);
+      return '';
+    }
+  };
+
+  // Форматирование даты в YYYY-MM-DD без манипуляций с часовым поясом
+  const formatDateToYYYYMMDD = (date) => {
+    if (!date) return '';
+    
+    try {
+      // Если передана строка даты
+      if (typeof date === 'string') {
+        // Просто возвращаем часть до T, если она есть
+        return date.split('T')[0];
+      }
+      
+      // Если передан объект Date, форматируем его в строку
+      if (date instanceof Date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
+      
+      return '';
+    } catch (err) {
+      console.error('Ошибка форматирования даты:', err, date);
+      return '';
     }
   };
 
   const handleSaveProgress = async (childId, progressData) => {
-    if (!childId || !progressData) {
-      setMessage({ text: 'Не указан ID ребенка или данные прогресса', type: 'error' });
-      setSnackbarOpen(true);
-      return;
-    }
-
     try {
-      // Проверяем обязательные поля
-      const requiredFields = ['report_date', 'details'];
-      const missingFields = requiredFields.filter(field => !progressData[field]);
-      if (missingFields.length > 0) {
-        throw new Error(`Отсутствуют обязательные поля: ${missingFields.join(', ')}`);
+      const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('Не найден токен авторизации');
       }
 
-      // Форматирование даты
-      let formattedDate = progressData.report_date;
-      if (formattedDate instanceof Date) {
-        const year = formattedDate.getFullYear();
-        const month = String(formattedDate.getMonth() + 1).padStart(2, '0');
-        const day = String(formattedDate.getDate()).padStart(2, '0');
-        formattedDate = `${year}-${month}-${day}`;
-      } else if (typeof formattedDate === 'string') {
-        // Если это строка в формате ISO или с временной зоной
-        if (formattedDate.includes('T') || formattedDate.includes('Z')) {
-          const date = new Date(formattedDate);
-          const year = date.getFullYear();
-          const month = String(date.getMonth() + 1).padStart(2, '0');
-          const day = String(date.getDate()).padStart(2, '0');
-          formattedDate = `${year}-${month}-${day}`;
-        } else if (!formattedDate.match(/^\d{4}-\d{2}-\d{2}$/)) {
-          throw new Error('Неверный формат даты. Требуется формат YYYY-MM-DD');
-        }
-      } else {
-        throw new Error('Неверный тип данных для даты');
+      if (!childId) {
+        throw new Error('Не указан ID ребенка');
       }
 
-      // Подготовка данных для отправки
+      if (!progressData.report_date) {
+        throw new Error('Не указана дата отчета');
+      }
+
+      // Определяем квартал на основе даты
+      const quarter = getQuarterFromDate(progressData.report_date);
+      const year = new Date(progressData.report_date).getFullYear();
+
+      // Валидация данных перед отправкой
       const validatedData = {
         child_id: parseInt(childId),
-        report_date: formattedDate,
-        details: progressData.details?.trim() || ''
+        report_date: progressData.report_date,
+        details: progressData.details || '',
+        active_speech: Number(progressData.active_speech) || 0,
+        games: Number(progressData.games) || 0,
+        art_activity: Number(progressData.art_activity) || 0,
+        constructive_activity: Number(progressData.constructive_activity) || 0,
+        sensory_development: Number(progressData.sensory_development) || 0,
+        weight_kg: Number(progressData.weight_kg) || 0,
+        height_cm: Number(progressData.height_cm) || 0,
+        movement_skills: Number(progressData.movement_skills) || 0,
+        quarter,
+        year
       };
 
-      // Валидация числовых полей
-      const ratingFields = [
-        'active_speech',
-        'games',
-        'art_activity',
-        'constructive_activity',
-        'sensory_development',
-        'movement_skills',
-        'naming_skills'
-      ];
-
-      ratingFields.forEach(field => {
-        if (progressData[field] !== undefined && progressData[field] !== null && progressData[field] !== '') {
-          const value = parseInt(progressData[field]);
-          if (!isNaN(value) && value >= 1 && value <= 10) {
-            validatedData[field] = value;
-          }
+      // Проверяем, что все числовые значения корректны
+      Object.entries(validatedData).forEach(([key, value]) => {
+        if (typeof value === 'number' && isNaN(value)) {
+          throw new Error(`Некорректное значение для поля ${key}`);
         }
       });
 
-      // Валидация физических параметров
-      ['height_cm', 'weight_kg'].forEach(field => {
-        if (progressData[field] !== undefined && progressData[field] !== null && progressData[field] !== '') {
-          const value = parseInt(progressData[field]);
-          if (!isNaN(value) && value > 0) {
-            validatedData[field] = value;
-          }
-        }
-      });
+      console.log('Отправляемые данные:', validatedData);
 
-      // Добавляем report_id только если он существует
-      if (progressData.report_id) {
-        validatedData.report_id = parseInt(progressData.report_id);
-      }
-
-      console.log('Подготовленные данные для сохранения:', validatedData);
-
+      let response;
       try {
-        let response;
-        if (validatedData.report_id) {
-          response = await progressApi.updateProgress(validatedData.report_id, validatedData);
+        if (progressData.report_id) {
+          console.log('Обновление существующей записи:', progressData.report_id);
+          response = await axios.put(`/progress/${progressData.report_id}`, validatedData);
         } else {
-          response = await progressApi.createProgress(validatedData);
+          console.log('Создание новой записи');
+          // Используем правильный путь API и добавляем обработку ошибок
+          response = await axios.post('/progress', validatedData, {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            }
+          }).catch(error => {
+            console.error('Детали ошибки:', {
+              response: error.response?.data,
+              status: error.response?.status,
+              message: error.message
+            });
+            throw new Error(error.response?.data?.message || error.message || 'Ошибка при создании записи');
+          });
         }
 
-        console.log('Ответ сервера:', response);
-        setMessage({ text: 'Прогресс успешно сохранен', type: 'success' });
-        setSnackbarOpen(true);
-        await fetchChildProgress(childId);
-        setOpenDialog(false);
+        if (response.status === 200 || response.status === 201) {
+          // Получаем обновленные данные
+          const updatedProgress = await fetchChildProgress(childId);
+          
+          // Обновляем состояние локально
+          if (childrenProgress[childId]) {
+            const updatedChildProgress = {
+              ...childrenProgress[childId],
+              [year]: {
+                ...childrenProgress[childId][year],
+                [quarter]: response.data
+              }
+            };
+            
+            setChildrenProgress(prev => ({
+              ...prev,
+              [childId]: updatedChildProgress
+            }));
+          }
+
+          setOpenDialog(false);
+          setSnackbarMessage(progressData.report_id ? 'Прогресс успешно обновлен' : 'Прогресс успешно сохранен');
+          setSnackbarSeverity('success');
+          setSnackbarOpen(true);
+
+          return response;
+        } else {
+          throw new Error('Неожиданный ответ сервера');
+        }
       } catch (error) {
-        console.error('Ошибка при сохранении:', error);
-        const errorMessage = error.response?.data?.message || error.message || 'Ошибка при сохранении прогресса';
-        setMessage({ text: errorMessage, type: 'error' });
-        setSnackbarOpen(true);
+        console.error('Ошибка при отправке запроса:', error);
+        if (error.response) {
+          console.error('Ответ сервера:', error.response.data);
+          throw new Error(error.response.data.message || 'Ошибка сервера при сохранении данных');
+        }
+        throw error;
       }
     } catch (error) {
-      console.error('Ошибка:', error);
-      setMessage({ text: error.message, type: 'error' });
+      console.error('Ошибка при сохранении:', error);
+      
+      let errorMessage = 'Ошибка при сохранении прогресса';
+      
+      if (error.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      } else if (error.response?.data?.error) {
+        errorMessage = error.response.data.error;
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+
+      setSnackbarMessage(errorMessage);
+      setSnackbarSeverity('error');
       setSnackbarOpen(true);
+      
+      throw error;
     }
   };
 
   const handleEdit = (report) => {
-    // Форматируем дату в YYYY-MM-DD при открытии формы редактирования
-    const formattedReport = {
+    console.log('Редактирование отчета:', report);
+    const date = new Date(report.report_date);
+    // Преобразуем дату в формат YYYY-MM-DD без изменения дня
+    const localDate = date.toISOString().split('T')[0];
+    console.log('Преобразованная дата:', localDate);
+    
+    setProgressData({
       report_id: report.report_id,
-      report_date: report.report_date ? new Date(report.report_date).toISOString().split('T')[0] : '',
-      details: report.details || '',
-      active_speech: report.active_speech !== undefined ? Number(report.active_speech) : null,
-      games: report.games !== undefined ? Number(report.games) : null,
-      art_activity: report.art_activity !== undefined ? Number(report.art_activity) : null,
-      constructive_activity: report.constructive_activity !== undefined ? Number(report.constructive_activity) : null,
-      sensory_development: report.sensory_development !== undefined ? Number(report.sensory_development) : null,
-      movement_skills: report.movement_skills !== undefined ? Number(report.movement_skills) : null,
-      height_cm: report.height_cm !== undefined ? Number(report.height_cm) : null,
-      weight_kg: report.weight_kg !== undefined ? Number(report.weight_kg) : null
-    };
-
-    setProgressData(formattedReport);
+      report_date: localDate,
+      details: report.details || report.notes || '',
+      active_speech: Number(report.active_speech) || 0,
+      games: Number(report.games) || 0,
+      art_activity: Number(report.art_activity) || 0,
+      constructive_activity: Number(report.constructive_activity) || 0,
+      sensory_development: Number(report.sensory_development) || 0,
+      weight_kg: Number(report.weight_kg) || 0,
+      height_cm: Number(report.height_cm) || 0,
+      movement_skills: Number(report.movement_skills) || 0,
+      quarter: getQuarterFromDate(localDate)
+    });
     setOpenDialog(true);
   };
 
   const renderChildProgress = (selectedChild, progressData) => {
+    console.log('Входные данные renderChildProgress:', {
+        selectedChild,
+        progressData,
+        selectedQuarter,
+        selectedYears
+    });
+
     if (!selectedChild) {
       return (
         <StyledCard sx={{ mb: 3 }}>
@@ -861,52 +1289,76 @@ const Progress = () => {
       );
     }
 
-    // Получаем данные для выбранного года и квартала
-    const selectedYearData = progressData[selectedYears[0]];
-    const selectedQuarterData = selectedYearData?.[selectedQuarter];
-
-    if (!selectedQuarterData) {
+    // Проверяем наличие данных прогресса
+    if (!progressData || Object.keys(progressData).length === 0) {
+        console.log('Нет данных прогресса');
       return (
         <StyledCard sx={{ mb: 3 }}>
           <CardContent>
             <Typography variant="body1" color="text.secondary">
-              Нет данных о прогрессе за {quarters.find(q => q.id === selectedQuarter)?.name} {selectedYears[0]} года для {selectedChild.name}
+              Нет данных о прогрессе
             </Typography>
           </CardContent>
         </StyledCard>
       );
     }
 
-    // Найдём оригинальный объект отчёта из всех отчетов ребёнка (если есть)
-    let originalReport = selectedQuarterData;
-    if (childrenProgress && selectedChild && childrenProgress[selectedChild.child_id]) {
-      const allReports = Object.values(childrenProgress[selectedChild.child_id])
-        .flatMap(yearObj => Object.values(yearObj));
-      const found = allReports.find(r => r.report_id === selectedQuarterData.report_id);
-      if (found) originalReport = found;
+    // Получаем данные для выбранного года
+    const selectedYear = selectedYears[0];
+    console.log('Проверка данных года:', {
+        selectedYear,
+        yearData: progressData[selectedYear],
+        allData: progressData
+    });
+    
+    const selectedYearData = progressData[selectedYear];
+    
+    if (!selectedYearData) {
+        console.log('Нет данных за год');
+      return (
+        <StyledCard sx={{ mb: 3 }}>
+          <CardContent>
+              <Typography variant="body1" color="text.secondary">
+                        Нет данных о прогрессе за {selectedYear} год
+              </Typography>
+          </CardContent>
+        </StyledCard>
+      );
+    }
+    
+    // Получаем данные за выбранный квартал
+    const selectedQuarterData = selectedYearData[selectedQuarter];
+    console.log('Проверка данных квартала:', {
+        selectedQuarter,
+        quarterData: selectedQuarterData
+    });
+    
+    if (!selectedQuarterData) {
+        console.log('Нет данных за квартал');
+      return (
+        <StyledCard sx={{ mb: 3 }}>
+          <CardContent>
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+              <Typography variant="body1" color="text.secondary">
+                            Нет данных о прогрессе за {quarters.find(q => q.id === selectedQuarter)?.name} {selectedYear} года для {selectedChild.name}
+              </Typography>
+            </Box>
+          </CardContent>
+        </StyledCard>
+      );
     }
 
+    // Если есть данные, отображаем их
     return (
       <Box>
         <StyledCard sx={{ mb: 3 }}>
           <CardContent>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
               <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                Прогресс за {quarters.find(q => q.id === selectedQuarter)?.name} {selectedYears[0]}
+                            Прогресс за {quarters.find(q => q.id === selectedQuarter)?.name} {selectedYear}
               </Typography>
-              {canEdit && (
-                <Button
-                  variant="outlined"
-                  size="small"
-                  onClick={() => {
-                    setProgressData(originalReport);
-                    setOpenDialog(true);
-                  }}
-                >
-                  Редактировать
-                </Button>
-              )}
             </Box>
+
             {/* Показатели развития */}
             <Box sx={{ mb: 4 }}>
               {developmentParams.map(param => {
@@ -920,20 +1372,10 @@ const Progress = () => {
                       flexWrap: 'wrap',
                       gap: 1
                     }}>
-                      <Typography 
-                        variant="body1" 
-                        sx={{ 
-                          fontWeight: 500,
-                          maxWidth: 'calc(100% - 80px)'
-                        }}
-                      >
+                                        <Typography variant="body1" sx={{ fontWeight: 500 }}>
                         {param.name}
                       </Typography>
-                      <Typography variant="body1" color="text.secondary" sx={{ 
-                        fontWeight: 500,
-                        minWidth: '70px',
-                        textAlign: 'right'
-                      }}>
+                                        <Typography variant="body1" color="text.secondary" sx={{ fontWeight: 500 }}>
                         {value} {param.type === 'rating' ? 'из 10' : param.id === 'height_cm' ? 'см' : 'кг'}
                       </Typography>
                     </Box>
@@ -954,20 +1396,19 @@ const Progress = () => {
                 );
               })}
             </Box>
-            {/* График и дополнительная информация оставляем без изменений */}
-            <Box sx={{ minHeight: 450, mt: 6, mb: 4, '& canvas': { maxWidth: '100%' } }}>
+
+                    {/* График прогресса */}
+                    <Box sx={{ minHeight: 450, mt: 6, mb: 4 }}>
               {renderProgressChart(progressData)}
             </Box>
+
+                    {/* Дополнительная информация */}
             {selectedQuarterData.details && (
               <Box sx={{ mt: 4 }}>
-                <Typography variant="h6" gutterBottom sx={{ fontWeight: 600, wordBreak: 'break-word' }}>
+                            <Typography variant="h6" gutterBottom sx={{ fontWeight: 600 }}>
                   Дополнительная информация:
                 </Typography>
-                <Typography 
-                  variant="body1" 
-                  color="text.secondary"
-                  sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
-                >
+                            <Typography variant="body1" color="text.secondary" sx={{ whiteSpace: 'pre-wrap' }}>
                   {selectedQuarterData.details}
                 </Typography>
               </Box>
@@ -990,17 +1431,37 @@ const Progress = () => {
     // Определяем порядок кварталов
     const quarterOrder = ['q1', 'q2', 'q3', 'q4'];
     
-    // Получаем только существующие кварталы и сортируем их в правильном порядке
-    const existingQuarters = Object.entries(yearData)
-      .filter(([quarter, data]) => data !== null && quarterOrder.includes(quarter))
-      .sort((a, b) => quarterOrder.indexOf(a[0]) - quarterOrder.indexOf(b[0]))
-      .map(([quarter]) => quarter);
-
-    console.log('Отладка порядка кварталов:', {
-      yearData,
-      existingQuarters,
-      rawData: Object.entries(yearData)
+    // Создаем структуру для данных, сгруппированных по фактическим кварталам
+    const quarterData = {
+      q1: null,
+      q2: null,
+      q3: null,
+      q4: null
+    };
+    
+    // Определяем квартал для каждого отчета
+    Object.entries(yearData).forEach(([key, report]) => {
+      if (report && report.report_date) {
+        const dateParts = report.report_date.split('T')[0].split('-');
+        if (dateParts.length >= 2) {
+          const month = parseInt(dateParts[1], 10);
+          let quarterFromDate;
+          
+          if (month >= 1 && month <= 3) quarterFromDate = 'q1';
+          else if (month >= 4 && month <= 6) quarterFromDate = 'q2';
+          else if (month >= 7 && month <= 9) quarterFromDate = 'q3';
+          else if (month >= 10 && month <= 12) quarterFromDate = 'q4';
+          
+          // Сохраняем отчет в соответствующий квартал
+          if (quarterFromDate) {
+            quarterData[quarterFromDate] = report;
+          }
+        }
+      }
     });
+
+    // Получаем только существующие кварталы и сортируем их в правильном порядке
+    const existingQuarters = quarterOrder.filter(q => quarterData[q] !== null);
 
     // Формируем метки для кварталов в правильном порядке
     const labels = existingQuarters.map(q => {
@@ -1012,13 +1473,13 @@ const Progress = () => {
       };
       return quarterLabels[q] || '';
     });
-    
+
     // Разделяем параметры на развитие и физические показатели
     const developmentDatasets = developmentParams
       .filter(param => param.type === 'rating')
       .map(param => ({
         label: param.name,
-        data: existingQuarters.map(q => yearData[q]?.[param.id] || null),
+        data: existingQuarters.map(q => quarterData[q]?.[param.id] || null),
         borderColor: param.color || '#6366F1',
         backgroundColor: 'transparent',
         borderWidth: 2,
@@ -1032,23 +1493,38 @@ const Progress = () => {
         yAxisID: 'y'
       }));
 
-    const physicalDatasets = developmentParams
-      .filter(param => param.type === 'number')
-      .map(param => ({
-        label: param.name,
-        data: existingQuarters.map(q => yearData[q]?.[param.id] || null),
-        borderColor: param.color || '#14B8A6',
+    const physicalDatasets = [
+      {
+        label: 'Рост (см)',
+        data: existingQuarters.map(q => quarterData[q]?.height_cm || null),
+        borderColor: '#6B7280',
         backgroundColor: 'transparent',
         borderWidth: 2,
         pointRadius: 6,
         pointHoverRadius: 8,
         pointBackgroundColor: 'white',
-        pointBorderColor: param.color || '#14B8A6',
+        pointBorderColor: '#6B7280',
         pointBorderWidth: 2,
         tension: 0.4,
         fill: false,
-        yAxisID: param.id === 'height_cm' ? 'y2' : 'y3'
-      }));
+        yAxisID: 'y2'
+      },
+      {
+        label: 'Вес (кг)',
+        data: existingQuarters.map(q => quarterData[q]?.weight_kg || null),
+        borderColor: '#14B8A6',
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        pointRadius: 6,
+        pointHoverRadius: 8,
+        pointBackgroundColor: 'white',
+        pointBorderColor: '#14B8A6',
+        pointBorderWidth: 2,
+        tension: 0.4,
+        fill: false,
+        yAxisID: 'y3'
+      }
+    ];
 
     const developmentChartData = {
       labels,
@@ -1061,180 +1537,158 @@ const Progress = () => {
     };
 
     const commonOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    interaction: {
-      mode: 'index',
-      intersect: false,
-    },
-    plugins: {
-      legend: {
-        position: 'bottom',
-        labels: {
-          usePointStyle: true,
-          padding: 20,
-          font: {
-            size: 12,
-            weight: 500
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false,
+      },
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            usePointStyle: true,
+            padding: 20,
+            font: {
+              size: 12,
+              weight: 500
             },
             boxWidth: 24,
-            boxHeight: 24,
-            generateLabels: (chart) => {
-              const labels = Chart.defaults.plugins.legend.labels.generateLabels(chart);
-              return labels.map(label => ({
-                ...label,
-                text: label.text.length > 25 ? label.text.substring(0, 25) + '...' : label.text
-              }));
-            }
-          },
-          margins: {
-            bottom: 50
-        }
-      },
-      tooltip: {
-        backgroundColor: 'rgba(255, 255, 255, 0.95)',
-        titleColor: '#1E293B',
-        bodyColor: '#1E293B',
-        bodyFont: {
-          size: 12
+            boxHeight: 24
+          }
         },
-        titleFont: {
+        tooltip: {
+          backgroundColor: 'rgba(255, 255, 255, 0.95)',
+          titleColor: '#1E293B',
+          bodyColor: '#1E293B',
+          bodyFont: {
+            size: 12
+          },
+          titleFont: {
             size: 14,
-          weight: 'bold'
-        },
-        padding: 12,
-        boxPadding: 8,
-        borderColor: 'rgba(0, 0, 0, 0.1)',
-        borderWidth: 1,
-        cornerRadius: 8,
-        displayColors: true,
-        callbacks: {
-          label: (context) => {
-            const value = context.raw;
-            const label = context.dataset.label;
-              const param = developmentParams.find(p => p.name === label);
-              if (param.type === 'number') {
-                return `${label}: ${value} ${param.id === 'height_cm' ? 'см' : 'кг'}`;
-              }
-              return `${label}: ${value} баллов`;
-          }
-        }
-      }
-    },
-    scales: {
-        x: {
-          grid: {
-            display: true,
-            drawBorder: true,
-            drawOnChartArea: true,
-            drawTicks: true,
+            weight: 'bold'
           },
-          ticks: {
-            font: {
-              size: 16,
-              weight: 500
-            }
-          }
-        }
-      }
-    };
-
-    const developmentOptions = {
-      ...commonOptions,
-      plugins: {
-        ...commonOptions.plugins,
-        title: {
-          display: true,
-          text: 'Показатели развития',
-          font: {
-            size: 16,
-            weight: 600
-          },
-          padding: 20
+          padding: 12,
+          boxPadding: 8,
+          borderColor: 'rgba(0, 0, 0, 0.1)',
+          borderWidth: 1,
+          cornerRadius: 8,
+          displayColors: true
         }
       },
       scales: {
-        ...commonOptions.scales,
-      y: {
-        beginAtZero: true,
-        max: 10,
-          position: 'left',
-          title: {
-            display: true,
-            text: 'Баллы',
-            font: {
-              size: 14,
-              weight: 500
-            }
+        y: {
+          beginAtZero: true,
+          max: 10,
+          grid: {
+            color: 'rgba(0, 0, 0, 0.05)',
+            drawBorder: false
           },
-        ticks: {
-          stepSize: 1,
-          font: {
-              size: 14
+          ticks: {
+            stepSize: 1,
+            font: {
+              size: 12
             },
             callback: (value) => `${value} б.`
+          }
+        },
+        x: {
+          grid: {
+            display: false
+          },
+          ticks: {
+            font: {
+              size: 12,
+              weight: 500
+            },
+            maxRotation: 45,
+            minRotation: 45
           }
         }
       }
     };
 
     const physicalOptions = {
-      ...commonOptions,
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false,
+      },
       plugins: {
-        ...commonOptions.plugins,
-        title: {
-          display: true,
-          text: 'Физические показатели',
-          font: {
-            size: 16,
-            weight: 600
+        legend: {
+          position: 'bottom',
+          labels: {
+            usePointStyle: true,
+            padding: 20,
+            font: {
+              size: 12,
+              weight: 500
+            },
+            boxWidth: 24,
+            boxHeight: 24
+          }
+        },
+        tooltip: {
+          backgroundColor: 'rgba(255, 255, 255, 0.95)',
+          titleColor: '#1E293B',
+          bodyColor: '#1E293B',
+          bodyFont: {
+            size: 12
           },
-          padding: 20
+          titleFont: {
+            size: 14,
+            weight: 'bold'
+          },
+          padding: 12,
+          boxPadding: 8,
+          borderColor: 'rgba(0, 0, 0, 0.1)',
+          borderWidth: 1,
+          cornerRadius: 8,
+          displayColors: true
         }
       },
       scales: {
-        ...commonOptions.scales,
         y2: {
-          beginAtZero: true,
           position: 'left',
-          min: 0,
+          beginAtZero: true,
           max: 200,
-          title: {
-            display: true,
-            text: 'см',
+          grid: {
+            color: 'rgba(0, 0, 0, 0.05)',
+            drawBorder: false
+          },
+          ticks: {
             font: {
-              size: 14,
-              weight: 500
-            }
-        },
-        ticks: {
-            stepSize: 20,
-          font: {
-              size: 14
-            }
+              size: 12
+            },
+            callback: (value) => `${value} см`
           }
         },
         y3: {
-          beginAtZero: true,
           position: 'right',
-          min: 0,
-          max: 100,
-          title: {
-            display: true,
-            text: 'кг',
-            font: {
-              size: 14,
-            weight: 500
-          }
-          },
+          beginAtZero: true,
+          max: 60,
           grid: {
-            drawOnChartArea: false
+            display: false
           },
           ticks: {
-            stepSize: 10,
             font: {
-              size: 14
-            }
+              size: 12
+            },
+            callback: (value) => `${value} кг`
+          }
+        },
+        x: {
+          grid: {
+            display: false
+          },
+          ticks: {
+            font: {
+              size: 12,
+              weight: 500
+            },
+            maxRotation: 45,
+            minRotation: 45
           }
         }
       }
@@ -1243,14 +1697,20 @@ const Progress = () => {
     return (
       <Box>
         <Box sx={{ height: 400, mb: 4 }}>
-          <Line data={developmentChartData} options={developmentOptions} />
+          <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 500, color: 'text.secondary' }}>
+            Развивающие показатели
+          </Typography>
+          <Line data={developmentChartData} options={commonOptions} />
         </Box>
         <Box sx={{ height: 400 }}>
+          <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 500, color: 'text.secondary' }}>
+            Физические показатели
+          </Typography>
           <Line data={physicalChartData} options={physicalOptions} />
         </Box>
       </Box>
     );
-  };
+};
 
   const handleViewChange = (event, newValue) => {
     setSelectedTab(newValue);
@@ -1261,71 +1721,230 @@ const Progress = () => {
   };
 
   const getGroupAverages = (groupId, selectedYear, selectedQuarter) => {
-    if (!groupId || !selectedYear || !selectedQuarter) return null;
+    if (!groupId || !selectedYear || !selectedQuarter) {
+        console.log('Недостаточно данных для расчета средних:', { groupId, selectedYear, selectedQuarter });
+        return {
+            active_speech: 0,
+            games: 0,
+            art_activity: 0,
+            constructive_activity: 0,
+            sensory_development: 0,
+            movement_skills: 0,
+            height_cm: 0,
+            weight_kg: 0
+        };
+    }
+
+    console.log('Расчет средних значений для группы:', {
+        groupId,
+        selectedYear,
+        selectedQuarter,
+        childrenCount: children.length,
+        progressData: childrenProgress
+    });
 
     // Фильтруем детей по группе
     const groupChildren = children.filter(child => {
-      const childGroupId = child.original_group_id 
-        ? parseInt(child.original_group_id) 
-        : parseInt(child.group_id);
-      return childGroupId === parseInt(groupId);
+        const childGroupId = child.original_group_id 
+            ? parseInt(child.original_group_id) 
+            : parseInt(child.group_id);
+        const match = childGroupId === parseInt(groupId);
+        console.log('Проверка ребенка:', {
+            childName: child.name,
+            childGroupId,
+            targetGroupId: parseInt(groupId),
+            match
+        });
+        return match;
     });
 
-    if (!groupChildren.length) return null;
+    if (!groupChildren.length) {
+        console.warn('Не найдено детей в группе для расчета средних');
+        return {
+            active_speech: 0,
+            games: 0,
+            art_activity: 0,
+            constructive_activity: 0,
+            sensory_development: 0,
+            movement_skills: 0,
+            height_cm: 0,
+            weight_kg: 0
+        };
+    }
+
+    console.log('Найдено детей в группе:', groupChildren.length);
 
     // Инициализируем объекты для подсчета сумм и количества значений
     const sums = {};
     const counts = {};
+    
+    // Инициализируем все параметры
     developmentParams.forEach(param => {
-      sums[param.id] = 0;
-      counts[param.id] = 0;
+        sums[param.id] = 0;
+        counts[param.id] = 0;
     });
 
     // Для каждого ребенка в группе
     groupChildren.forEach(child => {
-      // Получаем данные о прогрессе ребенка
-      const childProgress = childrenProgress[child.child_id];
-      if (childProgress && childProgress[selectedYear] && childProgress[selectedYear][selectedQuarter]) {
-        const quarterData = childProgress[selectedYear][selectedQuarter];
+        console.log('Обработка данных ребенка:', child.name);
         
-        // Суммируем значения по каждому параметру
-        developmentParams.forEach(param => {
-          const value = parseFloat(quarterData[param.id]);
-          if (!isNaN(value) && value !== null && value !== undefined) {
-            sums[param.id] += value;
-            counts[param.id]++;
-          }
+        if (!childrenProgress[child.child_id]) {
+            console.log('Нет данных прогресса для ребенка:', child.name);
+            return;
+        }
+
+        const yearData = childrenProgress[child.child_id][selectedYear];
+        if (!yearData) {
+            console.log('Нет данных за год для ребенка:', child.name);
+            return;
+        }
+
+        const quarterData = yearData[selectedQuarter];
+        if (!quarterData) {
+            console.log('Нет данных за квартал для ребенка:', child.name);
+            return;
+        }
+
+        console.log('Найдены данные прогресса для ребенка:', {
+            childName: child.name,
+            quarterData
         });
-      }
+
+        // Обрабатываем все параметры развития
+        developmentParams.forEach(param => {
+            const value = parseFloat(quarterData[param.id]);
+            if (!isNaN(value) && value !== null && value !== undefined && value > 0) {
+                sums[param.id] += value;
+                counts[param.id]++;
+                console.log(`Добавлено значение ${value} для параметра ${param.id}, всего значений: ${counts[param.id]}`);
+            }
+        });
     });
 
     // Вычисляем средние значения
     const averages = {};
     developmentParams.forEach(param => {
-      if (counts[param.id] > 0) {
-        averages[param.id] = parseFloat((sums[param.id] / counts[param.id]).toFixed(1));
-      } else {
-        averages[param.id] = 0;
-      }
+        if (counts[param.id] > 0) {
+            averages[param.id] = parseFloat((sums[param.id] / counts[param.id]).toFixed(1));
+        } else {
+            averages[param.id] = 0;
+        }
+        console.log(`Среднее значение для ${param.id}: ${averages[param.id]} (из ${counts[param.id]} значений)`);
     });
 
+    console.log('Итоговые средние значения:', averages);
     return averages;
-  };
+};
 
   const renderParentContent = () => (
-    <Grid container spacing={2}>
-      <Grid item xs={12} md={4}>
-        <Paper sx={{ p: 2, height: '100%' }}>
-          <Typography variant="h6" gutterBottom>
-            Мои дети
-          </Typography>
-          {renderChildList(children)}
-        </Paper>
-      </Grid>
-      <Grid item xs={12} md={8}>
-        {selectedChild && childrenProgress[selectedChild.child_id] && renderChildProgress(selectedChild, childrenProgress[selectedChild.child_id])}
-      </Grid>
-    </Grid>
+    <Box>
+      {loading ? (
+        <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
+          <CircularProgress />
+        </Box>
+      ) : error ? (
+        <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>
+      ) : children.length === 0 ? (
+        <Alert severity="info">У вас пока нет привязанных детей</Alert>
+      ) : (
+        <>
+          <Grid container spacing={3} sx={{ mb: 4 }}>
+            <Grid item xs={12} sm={4}>
+              <FormControl fullWidth size="small">
+                <InputLabel id="parent-quarter-select-label">Квартал</InputLabel>
+                <Select
+                  labelId="parent-quarter-select-label"
+                  value={selectedQuarter}
+                  onChange={handleQuarterChange}
+                  label="Квартал"
+                  sx={{
+                    '& .MuiSelect-select': {
+                      display: 'flex',
+                      alignItems: 'center'
+                    }
+                  }}
+                >
+                  {renderQuarterItems()}
+                </Select>
+              </FormControl>
+            </Grid>
+            
+            <Grid item xs={12} sm={4}>
+              <FormControl fullWidth size="small">
+                <InputLabel id="parent-year-select-label">Год</InputLabel>
+                <Select
+                  labelId="parent-year-select-label"
+                  multiple
+                  value={selectedYears}
+                  onChange={handleYearChange}
+                  label="Год"
+                  renderValue={(selected) => selected.join(', ')}
+                  sx={{
+                    '& .MuiSelect-select': {
+                      display: 'flex',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: 0.5
+                    }
+                  }}
+                >
+                  {availableYears.map((year) => (
+                    <MenuItem key={year} value={year}>
+                      <Checkbox checked={selectedYears.includes(year)} />
+                      <ListItemText primary={year} />
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+
+            <Grid item xs={12} sm={4}>
+              <FormControl fullWidth size="small">
+                <InputLabel id="parent-child-select-label">Ребенок</InputLabel>
+                <Select
+                  labelId="parent-child-select-label"
+                  value={selectedChild?.child_id || ''}
+                  onChange={(e) => {
+                    const child = children.find(c => c.child_id === e.target.value);
+                    handleChildSelect(child);
+                  }}
+                  label="Ребенок"
+                  sx={{
+                    '& .MuiSelect-select': {
+                      display: 'flex',
+                      alignItems: 'center'
+                    }
+                  }}
+                >
+                  {children.map((child) => (
+                    <MenuItem key={child.child_id} value={child.child_id}>
+                      {child.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+          </Grid>
+
+          {selectedChild && selectedQuarter && selectedYears.length > 0 ? (
+            <Box>
+              {renderChildProgress(selectedChild, progressData)}
+            </Box>
+          ) : (
+            <StyledCard>
+              <CardContent>
+                <Typography variant="body1" color="text.secondary" align="center">
+                  {!selectedChild ? 'Выберите ребенка' : 
+                   !selectedQuarter ? 'Выберите квартал' : 
+                   !selectedYears.length ? 'Выберите год' : 
+                   'Выберите все необходимые параметры'} для просмотра прогресса
+                </Typography>
+              </CardContent>
+            </StyledCard>
+          )}
+        </>
+      )}
+    </Box>
   );
 
   const renderTeacherContent = () => (
@@ -1339,7 +1958,15 @@ const Progress = () => {
         </Paper>
       </Grid>
       <Grid item xs={12} md={8}>
-        {selectedChild && childrenProgress[selectedChild.child_id] && renderChildProgress(selectedChild, childrenProgress[selectedChild.child_id])}
+        {selectedChild && progressData && (
+          <IndividualProgress
+            child={{
+              ...selectedChild,
+              progress: progressData[selectedYears[0]]?.[selectedQuarter] || {}
+            }}
+            onEdit={handleEdit}
+          />
+        )}
       </Grid>
     </Grid>
   );
@@ -1436,29 +2063,122 @@ const Progress = () => {
         </Grid>
         {selectedTab < 1 && (
           <Grid item xs={12} sm={4}>
-            <FormControl fullWidth size="small">
-              <InputLabel id="admin-group-select-label">Группа</InputLabel>
+            {user.role === 'parent' ? (
+              <FormControl sx={{ minWidth: 200 }}>
+                <InputLabel id="child-select-label">Ребенок</InputLabel>
+                <Select
+                  labelId="child-select-label"
+                  id="child-select"
+                  value={selectedChild?.child_id || ''}
+                  onChange={(e) => {
+                    const child = children.find(c => c.child_id === e.target.value);
+                    setSelectedChild(child);
+                    if (child) {
+                      api.progress.get(child.child_id)
+                        .then(response => {
+                          if (response && response.data) {
+                            const groupedProgress = groupProgressByQuarters(response.data);
+                            setProgressData(groupedProgress);
+                          }
+                        })
+                        .catch(error => {
+                          console.error('Ошибка при загрузке прогресса:', error);
+                          if (error.response) {
+                            setError(`Ошибка при загрузке прогресса: ${error.response.data.message}`);
+                          } else {
+                            setError('Ошибка при загрузке прогресса');
+                          }
+                        });
+                    }
+                  }}
+                  label="Ребенок"
+                  size="small"
+                  sx={{ 
+                    borderRadius: '8px',
+                    '& .MuiOutlinedInput-notchedOutline': {
+                      borderColor: 'rgba(0, 0, 0, 0.12)'
+                    }
+                  }}
+                >
+                  {Array.isArray(children) && children.length > 0 ? (
+                    children.map((child) => (
+                      <MenuItem key={child.child_id} value={child.child_id}>
+                        {child.name}
+                      </MenuItem>
+                    ))
+                  ) : (
+                    <MenuItem disabled>Нет доступных детей</MenuItem>
+                  )}
+                </Select>
+              </FormControl>
+            ) : (
+            <FormControl sx={{ minWidth: 200 }}>
+              <InputLabel id="group-select-label">Группа</InputLabel>
               <Select
-                labelId="admin-group-select-label"
-                value={selectedGroup}
+                labelId="group-select-label"
+                id="group-select"
+                value={selectedGroup || ''}
                 onChange={handleGroupChange}
                 label="Группа"
-                displayEmpty
-                sx={{
-                  '& .MuiSelect-select': {
-                    display: 'flex',
-                    alignItems: 'center'
+                size="small"
+                sx={{ 
+                  borderRadius: '8px',
+                  '& .MuiOutlinedInput-notchedOutline': {
+                    borderColor: 'rgba(0, 0, 0, 0.12)'
                   }
                 }}
               >
-                {renderGroupItems()}
+                {Array.isArray(groups) && groups.length > 0 ? (
+                  groups.map((group) => (
+                    <MenuItem key={group.group_id} value={group.group_id}>
+                      {group.group_name}
+                    </MenuItem>
+                  ))
+                ) : (
+                  <MenuItem disabled>Нет доступных групп</MenuItem>
+                )}
               </Select>
             </FormControl>
+            )}
           </Grid>
         )}
       </Grid>
 
       {selectedTab === 0 && (
+        user.role === 'parent' ? (
+          selectedChild ? (
+            <StyledCard>
+              <CardContent>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+                  <Typography variant="h6" component="h2">
+                    Прогресс развития: {selectedChild.name}
+                  </Typography>
+                  <Button 
+                    variant="outlined"
+                    size="small"
+                    startIcon={<DownloadIcon />}
+                    onClick={() => {/* TODO: Добавить экспорт */}}
+                  >
+                    Экспорт
+                  </Button>
+                </Box>
+                {renderIndividualProgress(selectedChild.child_id)}
+              </CardContent>
+            </StyledCard>
+          ) : (
+            <Box sx={{ 
+              display: 'flex', 
+              flexDirection: 'column', 
+              alignItems: 'center', 
+              justifyContent: 'center', 
+              minHeight: 400 
+            }}>
+              <Typography variant="body1" color="text.secondary">
+                Выберите ребенка для просмотра прогресса
+              </Typography>
+            </Box>
+          )
+        ) : (
         selectedGroup ? (
           <>
             <Grid container spacing={3} justifyContent="center">
@@ -1486,6 +2206,13 @@ const Progress = () => {
                           size="small"
                           startIcon={<DownloadIcon />}
                           onClick={() => {/* TODO: Добавить экспорт */}}
+                          sx={{
+                            borderRadius: '8px',
+                            fontSize: '0.9rem',
+                            height: '40px',
+                            textTransform: 'none',
+                            fontWeight: 600
+                          }}
                         >
                           Экспорт
                         </Button>
@@ -1509,12 +2236,13 @@ const Progress = () => {
                     ) : (
                       <>
                         <Box sx={{ mb: 4 }}>
-                        <GroupProgress
-                            data={getGroupAverages(parseInt(selectedGroup), selectedYears[0], selectedQuarter)}
-                          />
+                          {renderGroupProgress(
+                            getGroupAverages(parseInt(selectedGroup), selectedYears[0], selectedQuarter),
+                            false
+                          )}
                         </Box>
                         <Box sx={{ height: 400 }}>
-                            {renderGroupProgressChart(parseInt(selectedGroup))}
+                          {renderProgressChart(getGroupAverages(parseInt(selectedGroup), selectedYears[0], selectedQuarter))}
                         </Box>
                       </>
                     )}
@@ -1539,6 +2267,7 @@ const Progress = () => {
               После выбора группы вы сможете просмотреть общий прогресс группы и индивидуальный прогресс детей
             </Typography>
           </Box>
+          )
         )
       )}
 
@@ -1572,6 +2301,34 @@ const Progress = () => {
   );
 
   const renderContent = () => {
+    if (!user) {
+      return (
+        <Box sx={{ 
+          display: 'flex', 
+          flexDirection: 'column',
+          justifyContent: 'center', 
+          alignItems: 'center', 
+          minHeight: 400,
+          textAlign: 'center'
+        }}>
+          <Typography variant="h6" color="error" gutterBottom>
+            Ошибка авторизации
+          </Typography>
+          <Typography variant="body1" color="text.secondary">
+            Для доступа к этой странице необходимо войти в систему
+          </Typography>
+          <Button 
+            variant="contained" 
+            sx={{ mt: 3 }}
+            component={Link}
+            to="/login"
+          >
+            Перейти на страницу входа
+          </Button>
+        </Box>
+      );
+    }
+    
     if (loading) {
       return (
         <Box sx={{ 
@@ -1598,29 +2355,53 @@ const Progress = () => {
           justifyContent: 'center', 
           alignItems: 'center', 
           minHeight: 400,
-          textAlign: 'center'
+          textAlign: 'center',
+          p: 3
         }}>
           <Typography variant="h6" color="error" gutterBottom>
             Произошла ошибка
           </Typography>
-          <Typography variant="body1" color="text.secondary">
+          <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
             {error}
           </Typography>
           <Button 
             variant="contained" 
-            sx={{ mt: 3 }}
             onClick={() => window.location.reload()}
+            startIcon={<RefreshIcon />}
           >
-            Перезагрузить страницу
+            Попробовать снова
           </Button>
         </Box>
       );
     }
 
-    if (user.role === 'admin' || user.role === 'psychologist') {
-      return renderAdminContent();
+    switch (user.role) {
+      case 'parent':
+        return renderParentContent();
+      case 'teacher':
+        return renderTeacherContent();
+      case 'admin':
+      case 'psychologist':
+        return renderAdminContent();
+      default:
+        return (
+          <Box sx={{ 
+            display: 'flex', 
+            flexDirection: 'column',
+            justifyContent: 'center', 
+            alignItems: 'center', 
+            minHeight: 400,
+            textAlign: 'center'
+          }}>
+            <Typography variant="h6" color="error" gutterBottom>
+              Доступ запрещен
+            </Typography>
+            <Typography variant="body1" color="text.secondary">
+              У вас нет прав для просмотра этой страницы
+            </Typography>
+          </Box>
+        );
     }
-    return user.role === 'parent' ? renderParentContent() : renderTeacherContent();
   };
 
   // Метод для отображения элементов выпадающего списка групп 
@@ -1662,186 +2443,240 @@ const Progress = () => {
     ];
   };
 
-  // Функция для отображения графика прогресса группы
-  const renderGroupProgressChart = (groupId) => {
-    if (!selectedYears[0] || !selectedQuarter) return null;
+  // Добавляем функцию для подготовки данных групп
+  const prepareGroupDataForChart = (data) => {
+    if (!data) return null;
 
-    // Определяем порядок кварталов
-    const quarterOrder = ['q1', 'q2', 'q3', 'q4'];
-    
-    // Получаем средние показатели для всех кварталов в правильном порядке
-    const groupData = {};
-    
+    const year = selectedYears[0];
+    const groupId = selectedGroup;
+
+    // Создаем структуру данных в формате, который ожидает график
+    const result = {
+      [year]: {
+        q1: null,
+        q2: null,
+        q3: null,
+        q4: null
+      }
+    };
+
     // Получаем данные для каждого квартала
-    quarterOrder.forEach(quarterId => {
-      const quarterAverages = getGroupAverages(groupId, selectedYears[0], quarterId);
-      if (quarterAverages && Object.values(quarterAverages).some(v => v > 0)) {
-        groupData[quarterId] = quarterAverages;
+    ['q1', 'q2', 'q3', 'q4'].forEach(quarter => {
+      const quarterData = getGroupAverages(groupId, year, quarter);
+      if (quarterData && Object.values(quarterData).some(v => v > 0)) {
+        result[year][quarter] = {
+          report_date: getStandardQuarterDate(year, quarter),
+          ...quarterData
+        };
       }
     });
 
-    console.log('Отладка порядка кварталов в группе:', {
-      groupData,
-      quarterOrder
-    });
+    return result;
+  };
 
-    // Проверяем, есть ли данные хотя бы для одного квартала
-    if (Object.keys(groupData).length === 0) {
+  const renderGroupProgress = (data, showAllGroups = false) => {
+    if (!data) {
       return (
-        <Typography variant="body1" sx={{ textAlign: 'center', color: 'text.secondary', py: 4 }}>
-          Нет данных для отображения
-        </Typography>
+        <Box sx={{ textAlign: 'center', py: 3 }}>
+          <Typography variant="body1" color="text.secondary">
+            {showAllGroups ? 
+              'Нет данных о прогрессе групп за выбранный период' :
+              'Нет данных о прогрессе группы за выбранный период'
+            }
+          </Typography>
+        </Box>
       );
     }
+  
+    const hasAnyProgress = Object.values(data).some(value => value > 0);
     
-    const chartData = {
-      labels: quarterOrder.map(q => {
-        const quarterLabels = {
-          q1: '1 кв. (Янв-Март)',
-          q2: '2 кв. (Апр-Июнь)',
-          q3: '3 кв. (Июль-Сент)',
-          q4: '4 кв. (Окт-Дек)'
-        };
-        return quarterLabels[q] || '';
-      }),
-      datasets: developmentParams
-        .filter(param => param.type === 'rating')
-        .map(param => ({
-          label: param.name,
-          data: quarterOrder.map(q => groupData[q]?.[param.id] || 0),
-          borderColor: param.color || '#6366F1',
-          backgroundColor: 'white',
-          borderWidth: 2,
-          pointRadius: 6,
-          pointHoverRadius: 8,
-          pointBackgroundColor: 'white',
-          pointBorderColor: param.color || '#6366F1',
-          pointBorderWidth: 2,
-          tension: 0.4,
-          fill: false
-      }))
-    };
+    if (!hasAnyProgress) {
+      return (
+        <Box sx={{ textAlign: 'center', py: 3 }}>
+          <Typography variant="body1" color="text.secondary">
+            {showAllGroups ? 
+              'В выбранном периоде нет данных о прогрессе ни для одной из групп' :
+              'В выбранном периоде нет данных о прогрессе для этой группы'
+            }
+          </Typography>
+        </Box>
+      );
+    }
 
-    const options = {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: {
-        mode: 'index',
-        intersect: false,
-      },
-      plugins: {
-        legend: {
-          position: 'bottom',
-          labels: {
-            usePointStyle: true,
-            padding: 20,
-            font: {
-              size: 12,
-              weight: 500
-            },
-            boxWidth: 24,
-            boxHeight: 24,
-            generateLabels: (chart) => {
-              const labels = Chart.defaults.plugins.legend.labels.generateLabels(chart);
-              return labels.map(label => ({
-                ...label,
-                text: label.text.length > 25 ? label.text.substring(0, 25) + '...' : label.text
-              }));
-            }
-          },
-          margins: {
-            bottom: 50
-          }
-        },
-        tooltip: {
-          backgroundColor: 'rgba(255, 255, 255, 0.95)',
-          titleColor: '#1E293B',
-          bodyColor: '#1E293B',
-          bodyFont: {
-            size: 12
-          },
-          titleFont: {
-            size: 14,
-            weight: 'bold'
-          },
-          padding: 12,
-          boxPadding: 8,
-          borderColor: 'rgba(0, 0, 0, 0.1)',
-          borderWidth: 1,
-          cornerRadius: 8,
-          displayColors: true,
-          callbacks: {
-            label: (context) => {
-              const value = context.raw;
-              const label = context.dataset.label;
-              return `${label}: ${value.toFixed(1)} баллов`;
-            }
-          }
-        }
-      },
-      scales: {
-        y: {
-          beginAtZero: true,
-          max: 10,
-          position: 'left',
-          title: {
-            display: true,
-            text: 'Баллы',
-            font: {
-              size: 14,
-              weight: 500
-            }
-          },
-          ticks: {
-            stepSize: 1,
-            font: {
-              size: 14
-            },
-            callback: (value) => `${value} б.`
-          }
-        },
-        x: {
-          grid: {
-            display: true,
-            drawBorder: true,
-            drawOnChartArea: true,
-            drawTicks: true,
-          },
-          ticks: {
-            font: {
-              size: 14,
-              weight: 500
-            },
-            maxRotation: 45,
-            minRotation: 45
-          }
-        }
-      }
-    };
+    // Подготавливаем данные для графика
+    const chartData = prepareGroupDataForChart(data);
 
-    return <Line data={chartData} options={options} />;
-  };
+    return (
+      <Box>
+        <Typography variant="h6" gutterBottom sx={{ 
+          fontWeight: 600, 
+          mb: 3,
+          color: 'text.primary'
+        }}>
+          {showAllGroups ? 'Общий прогресс всех групп' : 'Прогресс группы'}
+        </Typography>
+
+        {/* Развивающие показатели */}
+        <Box sx={{ mb: 4 }}>
+          <Typography variant="subtitle1" sx={{ 
+            fontWeight: 500, 
+            mb: 2,
+            color: 'text.secondary'
+          }}>
+            Развивающие показатели
+          </Typography>
+          {developmentParams
+            .filter(param => param.type === 'rating')
+            .map(param => {
+              const value = data[param.id] || 0;
+              return (
+                <Box key={param.id} sx={{ mb: 2.5 }}>
+                  <Box sx={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    mb: 1,
+                    flexWrap: 'wrap',
+                    gap: 1
+                  }}>
+                    <Typography 
+                      variant="body1" 
+                      sx={{ 
+                        fontWeight: 500,
+                        maxWidth: 'calc(100% - 80px)'
+                      }}
+                    >
+                      {param.name}
+                    </Typography>
+                    <Typography 
+                      variant="body1" 
+                      color="text.secondary" 
+                      sx={{ 
+                        fontWeight: 500,
+                        minWidth: '70px',
+                        textAlign: 'right'
+                      }}
+                    >
+                      {value.toFixed(1)} из 10
+                    </Typography>
+                  </Box>
+                  <LinearProgress 
+                    variant="determinate" 
+                    value={value * 10} 
+                    sx={{ 
+                      height: 12,
+                      borderRadius: 6,
+                      backgroundColor: alpha(param.color || '#6366F1', 0.1),
+                      '& .MuiLinearProgress-bar': {
+                        backgroundColor: param.color || '#6366F1',
+                        borderRadius: 6
+                      }
+                    }}
+                  />
+                </Box>
+              );
+            })}
+        </Box>
+
+        {/* Физические показатели */}
+        <Box>
+          <Typography variant="subtitle1" sx={{ 
+            fontWeight: 500, 
+            mb: 2,
+            color: 'text.secondary'
+          }}>
+            Физические показатели
+          </Typography>
+          {developmentParams
+            .filter(param => param.type === 'number')
+            .map(param => {
+              const value = data[param.id] || 0;
+              const unit = param.id === 'height_cm' ? 'см' : 'кг';
+              return (
+                <Box key={param.id} sx={{ mb: 2.5 }}>
+                  <Box sx={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    mb: 1,
+                    flexWrap: 'wrap',
+                    gap: 1
+                  }}>
+                    <Typography 
+                      variant="body1" 
+                      sx={{ 
+                        fontWeight: 500,
+                        maxWidth: 'calc(100% - 80px)'
+                      }}
+                    >
+                      {param.name}
+                    </Typography>
+                    <Typography 
+                      variant="body1" 
+                      color="text.secondary" 
+                      sx={{ 
+                        fontWeight: 500,
+                        minWidth: '70px',
+                        textAlign: 'right'
+                      }}
+                    >
+                      {value.toFixed(1)} {unit}
+                    </Typography>
+                  </Box>
+                  <LinearProgress 
+                    variant="determinate" 
+                    value={(value / param.max) * 100} 
+                    sx={{ 
+                      height: 12,
+                      borderRadius: 6,
+                      backgroundColor: alpha(param.color || '#6B7280', 0.1),
+                      '& .MuiLinearProgress-bar': {
+                        backgroundColor: param.color || '#6B7280',
+                        borderRadius: 6
+                      }
+                    }}
+                  />
+                </Box>
+              );
+            })}
+        </Box>
+
+        {/* График прогресса */}
+        <Box sx={{ minHeight: 450, mt: 6, mb: 4, '& canvas': { maxWidth: '100%' } }}>
+          {renderProgressChart(chartData)}
+        </Box>
+      </Box>
+    );
+};
 
   // Удаляем старую версию функции getAllGroupsAverages
   const renderAllGroupsProgressChart = () => {
     if (!selectedYears[0] || !selectedQuarter || !groups.length) return null;
 
+    // Получаем средние показатели для всех кварталов
+    const allGroupsData = {};
+    
+    // Создаем структуру для данных, сгруппированных по фактическим кварталам
+    const quarterData = {
+      q1: null,
+      q2: null,
+      q3: null,
+      q4: null
+    };
+    
     // Определяем порядок кварталов
     const quarterOrder = ['q1', 'q2', 'q3', 'q4'];
-    
-    // Получаем средние показатели для всех кварталов в правильном порядке
-    const allGroupsData = {};
     
     // Получаем данные для каждого квартала
     quarterOrder.forEach(quarterId => {
       const quarterAverages = getAllGroupsAverages(selectedYears[0], quarterId);
       if (quarterAverages && Object.values(quarterAverages).some(v => v > 0)) {
-        allGroupsData[quarterId] = quarterAverages;
+        quarterData[quarterId] = quarterAverages;
       }
     });
+    
+    console.log('Данные по всем группам, сгруппированные по кварталам:', quarterData);
 
     // Проверяем, есть ли данные хотя бы для одного квартала
-    if (Object.keys(allGroupsData).length === 0) {
+    if (!Object.values(quarterData).some(v => v !== null)) {
       return (
         <Typography variant="body1" sx={{ textAlign: 'center', color: 'text.secondary', py: 4 }}>
           Нет данных для отображения
@@ -1849,8 +2684,11 @@ const Progress = () => {
       );
     }
 
+    // Получаем только существующие кварталы
+    const existingQuarters = quarterOrder.filter(q => quarterData[q] !== null);
+
     const chartData = {
-      labels: quarterOrder.map(q => {
+      labels: existingQuarters.map(q => {
         const quarterLabels = {
           q1: '1 кв. (Янв-Март)',
           q2: '2 кв. (Апр-Июнь)',
@@ -1863,7 +2701,7 @@ const Progress = () => {
         .filter(param => param.type === 'rating')
         .map(param => ({
           label: param.name,
-          data: quarterOrder.map(q => allGroupsData[q]?.[param.id] || 0),
+          data: existingQuarters.map(q => quarterData[q]?.[param.id] || 0),
           borderColor: param.color || '#6366F1',
           backgroundColor: 'white',
           borderWidth: 2,
@@ -1895,17 +2733,7 @@ const Progress = () => {
               weight: 500
             },
             boxWidth: 24,
-            boxHeight: 24,
-            generateLabels: (chart) => {
-              const labels = Chart.defaults.plugins.legend.labels.generateLabels(chart);
-              return labels.map(label => ({
-                ...label,
-                text: label.text.length > 25 ? label.text.substring(0, 25) + '...' : label.text
-              }));
-            }
-          },
-          margins: {
-            bottom: 50
+            boxHeight: 24
           }
         },
         tooltip: {
@@ -1924,14 +2752,7 @@ const Progress = () => {
           borderColor: 'rgba(0, 0, 0, 0.1)',
           borderWidth: 1,
           cornerRadius: 8,
-          displayColors: true,
-          callbacks: {
-            label: (context) => {
-              const value = context.raw;
-              const label = context.dataset.label;
-              return `${label}: ${value.toFixed(1)} баллов`;
-            }
-          }
+          displayColors: true
         }
       },
       scales: {
@@ -2128,43 +2949,29 @@ const Progress = () => {
     );
   };
 
-  const getAvailableQuarters = useCallback((selectedYear) => {
-    if (!selectedYear) return [];
+  // Функция для получения доступных кварталов
+  const getAvailableQuarters = (year) => {
+    if (!year) return quarters.slice(1); // Возвращаем все кварталы кроме пустого значения
     
-    const currentDate = new Date();
-    const currentYear = currentDate.getFullYear();
-    const currentMonth = currentDate.getMonth() + 1; // 1-12
+    const currentYear = new Date().getFullYear();
+    const currentMonth = new Date().getMonth() + 1;
     
-    // Если выбран год из прошлого - доступны все кварталы
-    if (parseInt(selectedYear) < currentYear) {
-      return quarters.filter(q => q.id !== '');
+    if (parseInt(year) < currentYear) {
+      // Для прошлых лет возвращаем все кварталы
+      return quarters.slice(1);
+    } else if (parseInt(year) > currentYear) {
+      // Для будущих лет возвращаем только первый квартал
+      return quarters.slice(1, 3);
+    } else {
+      // Для текущего года возвращаем кварталы до текущего
+      const currentQuarters = [quarters[1]];
+      if (currentMonth > 3) currentQuarters.push(quarters[2]);
+      if (currentMonth > 6) currentQuarters.push(quarters[3]);
+      if (currentMonth > 9) currentQuarters.push(quarters[4]);
+      return currentQuarters;
     }
-    
-    // Если выбран будущий год - кварталы недоступны
-    if (parseInt(selectedYear) > currentYear) {
-      return [];
-    }
-    
-    // Для текущего года определяем доступные кварталы на основе текущего месяца
-    const availableQuarters = quarters.filter(q => {
-      if (q.id === '') return true; // Оставляем пустой вариант
-      
-      // Определяем месяц квартала
-      const quarterMonth = {
-        q1: 1,  // Январь
-        q2: 4,  // Апрель
-        q3: 7,  // Июль
-        q4: 10  // Октябрь
-      }[q.id];
-      
-      // Квартал доступен, если его месяц уже наступил
-      return currentMonth >= quarterMonth;
-    });
-    
-    return availableQuarters;
-  }, []);
+  };
 
-  // Обновляем обработчик изменения года
   const handleYearChange = (event) => {
     const newYears = event.target.value;
     setSelectedYears(newYears);
@@ -2199,16 +3006,142 @@ const Progress = () => {
 
   const handleCloseSnackbar = () => {
     setSnackbarOpen(false);
-    setMessage(null);
+  };
+
+  const handleCloseDialog = () => {
+    setOpenDialog(false);
+    setProgressData(null);
+  };
+
+  // Обновляем useEffect для загрузки прогресса при изменении года и квартала
+  useEffect(() => {
+    const loadAllProgress = async () => {
+      if (selectedQuarter && selectedYears[0]) {
+        console.log('Загрузка прогресса...');
+        setLoading(true);
+        
+        try {
+          if (user.role === 'parent') {
+            // Для родителя загружаем прогресс только его детей
+            console.log('Загрузка прогресса для детей родителя:', children);
+            
+            for (const child of children) {
+              try {
+                if (!childrenProgress[child.child_id]) {
+                  console.log('Загрузка прогресса для ребенка:', child.child_id);
+                  const progressData = await fetchChildProgress(child.child_id);
+                  setChildrenProgress(prev => ({
+                    ...prev,
+                    [child.child_id]: progressData
+                  }));
+                }
+              } catch (error) {
+                console.error(`Ошибка при загрузке прогресса для ребенка ${child.name}:`, error);
+              }
+            }
+          } else {
+            // Для остальных ролей оставляем существующую логику
+          const response = await groupsApi.getAll();
+          console.log('Получены все группы:', response);
+          
+          if (!response.data || !Array.isArray(response.data)) {
+            throw new Error('Неверный формат данных о группах');
+          }
+          
+          for (const group of response.data) {
+            try {
+              const groupChildren = await axios.get(`/groups/${group.group_id}/children`);
+              console.log(`Получены дети группы ${group.group_name}:`, groupChildren.data);
+              
+              if (Array.isArray(groupChildren.data)) {
+                for (const child of groupChildren.data) {
+                  try {
+                    const progressData = await fetchChildProgress(child.child_id);
+                    setChildrenProgress(prev => ({
+                      ...prev,
+                      [child.child_id]: progressData
+                    }));
+                  } catch (error) {
+                    console.error(`Ошибка при загрузке прогресса для ребенка ${child.name}:`, error);
+                  }
+                }
+              }
+            } catch (error) {
+              console.error(`Ошибка при загрузке детей группы ${group.group_name}:`, error);
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Ошибка при загрузке данных:', error);
+          setError('Ошибка при загрузке данных прогресса');
+        } finally {
+          setLoading(false);
+        }
+      }
+    };
+
+    loadAllProgress();
+  }, [selectedQuarter, selectedYears[0], user.role, children]);
+
+  // Обновляем useEffect для загрузки прогресса при изменении группы
+  useEffect(() => {
+    const loadGroupProgress = async () => {
+      if (selectedGroup && children.length > 0) {
+        console.log('Загрузка прогресса для выбранной группы...');
+        
+        // Загружаем прогресс только для тех детей, для которых его еще нет
+        for (const child of children) {
+          try {
+            if (!childrenProgress[child.child_id]) {
+              console.log('Загрузка прогресса для ребенка:', child.child_id);
+              const progressData = await fetchChildProgress(child.child_id);
+              
+              setChildrenProgress(prev => ({
+                ...prev,
+                [child.child_id]: progressData
+              }));
+            }
+          } catch (error) {
+            console.error('Ошибка при загрузке прогресса для ребенка:', child.child_id, error);
+          }
+        }
+      }
+    };
+
+    loadGroupProgress();
+  }, [selectedGroup, children]);
+
+  // Добавляем функцию renderIndividualProgress
+  const renderIndividualProgress = (childId) => {
+    if (!childId || !progressData) {
+      return (
+        <Typography variant="body1" color="text.secondary">
+          Нет данных о прогрессе
+        </Typography>
+      );
+    }
+
+    return renderChildProgress(selectedChild, progressData);
   };
 
   return (
-    <Box sx={{ py: 4, px: { xs: 2, md: 4 } }}>
+    <Box sx={{ py: 2, px: { xs: 2, md: 2 } }}>
       <Typography variant="h4" gutterBottom sx={{ 
-        fontWeight: 700,
-        background: 'linear-gradient(135deg, #1E293B 0%, #334155 100%)',
-        WebkitBackgroundClip: 'text',
-        WebkitTextFillColor: 'transparent'
+        fontWeight: 600,
+        fontSize: '2rem',
+        position: 'relative',
+        paddingBottom: '12px',
+        marginBottom: '24px',
+        '&::after': {
+          content: '""',
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          width: '48px',
+          height: '3px',
+          backgroundColor: 'primary.main',
+          borderRadius: '2px'
+        }
       }}>
         Прогресс развития
       </Typography>
@@ -2223,7 +3156,7 @@ const Progress = () => {
 
       <Dialog
         open={openDialog}
-        onClose={() => setOpenDialog(false)}
+        onClose={handleCloseDialog}
         maxWidth="md"
         fullWidth
         PaperProps={{
@@ -2233,99 +3166,127 @@ const Progress = () => {
           }
         }}
       >
+        {console.log('Состояние диалога:', { openDialog, progressData })}
         <DialogTitle>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <Typography variant="h6">
               {progressData?.report_id ? 'Редактирование прогресса' : 'Новая запись о прогрессе'}
             </Typography>
-            <IconButton onClick={() => setOpenDialog(false)}>
+            <IconButton onClick={handleCloseDialog}>
               <CloseIcon />
             </IconButton>
           </Box>
         </DialogTitle>
         <DialogContent dividers>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            <Grid item xs={12}>
+          {progressData ? (
+            <>
               <TextField
                 fullWidth
                 type="date"
                 label="Дата отчета"
-                value={progressData?.report_date || ''}
-                onChange={(e) => setProgressData(prev => ({
-                  ...prev,
-                  report_date: e.target.value
-                }))}
+                value={progressData.report_date || ''}
+                onChange={(e) => {
+                  const selectedDate = e.target.value;
+                  console.log('Выбранная дата:', selectedDate);
+                  setProgressData(prev => ({
+                    ...prev,
+                    report_date: selectedDate,
+                    quarter: getQuarterFromDate(selectedDate)
+                  }));
+                }}
+                required
+                sx={{ mb: 2 }}
                 InputLabelProps={{ shrink: true }}
               />
-            </Grid>
+              <Grid container spacing={3}>
+                {developmentParams.map(param => (
+                  <Grid item xs={12} sm={6} key={param.id}>
+                    <Box sx={{ mb: 2 }}>
+                      <Typography variant="subtitle2" gutterBottom>
+                        {param.name}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                        {param.type === 'rating' ? 'Оценка от 0 до 10' : param.id === 'height_cm' ? 'Рост в сантиметрах' : 'Вес в килограммах'}
+                      </Typography>
+                      {param.type === 'number' ? (
+                        <TextField
+                          fullWidth
+                          type="number"
+                          value={progressData[param.id] !== undefined ? progressData[param.id] : ''}
+                          onChange={(e) => {
+                            const value = e.target.value === '' ? '' : Number(e.target.value);
+                            setProgressData(prev => ({
+                              ...prev,
+                              [param.id]: value
+                            }));
+                          }}
+                          inputProps={{
+                            step: param.step || 1,
+                            min: 0,
+                            max: param.max
+                          }}
+                          size="small"
+                        />
+                      ) : (
+                        <StyledRating
+                          value={Number(progressData[param.id]) || 0}
+                          onChange={(e, value) => {
+                            setProgressData(prev => ({
+                              ...prev,
+                              [param.id]: value
+                            }));
+                          }}
+                          max={param.max || 10}
+                        />
+                      )}
+                    </Box>
+                  </Grid>
+                ))}
 
-            {developmentParams.map(param => (
-              <Grid item xs={12} sm={6} key={param.id}>
-                <Box sx={{ mb: 2 }}>
-                  <Typography variant="subtitle2" gutterBottom>
-                    {param.name}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-                    {param.description}
-                  </Typography>
-                  {param.type === 'number' ? (
-                    <TextField
-                      fullWidth
-                      type="number"
-                      value={progressData?.[param.id] || ''}
-                      onChange={(e) => {
-                        const value = parseFloat(e.target.value);
-                        setProgressData(prev => ({
-                          ...prev,
-                          [param.id]: value
-                        }));
-                      }}
-                      inputProps={{
-                        step: param.step || 1,
-                        min: 0,
-                        max: param.max
-                      }}
-                      size="small"
-                    />
-                  ) : (
-                    <StyledRating
-                      value={progressData?.[param.id] || 0}
-                      onChange={(e, value) => {
-                        setProgressData(prev => ({
-                          ...prev,
-                          [param.id]: value
-                        }));
-                      }}
-                      max={param.max || 10}
-                    />
-                  )}
-                </Box>
+                <Grid item xs={12}>
+                  <TextField
+                    fullWidth
+                    multiline
+                    rows={4}
+                    label="Дополнительная информация"
+                    value={progressData.details || ''}
+                    onChange={(e) => setProgressData(prev => ({
+                      ...prev,
+                      details: e.target.value
+                    }))}
+                  />
+                </Grid>
               </Grid>
-            ))}
-
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
-                multiline
-                rows={4}
-                label="Дополнительная информация"
-                value={progressData?.details || ''}
-                onChange={(e) => setProgressData(prev => ({
-                  ...prev,
-                  details: e.target.value
-                }))}
-              />
-            </Grid>
-          </Grid>
+            </>
+          ) : (
+            <Box sx={{ textAlign: 'center', py: 3 }}>
+              <CircularProgress size={40} />
+              <Typography variant="body1" sx={{ mt: 2 }}>
+                Загрузка данных...
+              </Typography>
+            </Box>
+          )}
         </DialogContent>
         <DialogActions sx={{ px: 3, py: 2 }}>
-          <Button onClick={() => setOpenDialog(false)} size="large">
+          <Button onClick={handleCloseDialog} size="large">
             Отмена
           </Button>
           <Button
             variant="contained"
             size="large"
-            onClick={() => handleSaveProgress(selectedChild?.child_id, progressData)}
+            onClick={() => {
+              if (progressData && selectedChild) {
+                handleSaveProgress(selectedChild.child_id, progressData)
+                  .catch(error => {
+                    console.error('Ошибка при сохранении:', error);
+                  });
+              } else {
+                setSnackbarMessage('Не выбран ребенок или данные не загружены');
+                setSnackbarSeverity('error');
+                setSnackbarOpen(true);
+              }
+            }}
+            disabled={!progressData || !selectedChild}
             sx={{
               background: 'linear-gradient(135deg, #6366F1 0%, #818CF8 100%)',
               '&:hover': {
@@ -2343,8 +3304,8 @@ const Progress = () => {
         onClose={handleCloseSnackbar}
         anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
       >
-        <Alert onClose={handleCloseSnackbar} severity={message?.type || 'info'}>
-          {message?.text}
+        <Alert onClose={handleCloseSnackbar} severity={snackbarSeverity}>
+          {snackbarMessage}
         </Alert>
       </Snackbar>
     </Box>

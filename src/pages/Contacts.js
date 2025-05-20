@@ -91,27 +91,13 @@ const Contacts = () => {
     const fetchData = async () => {
       try {
         setLoading(true);
-        
-        try {
-          const staffData = await api.getStaff();
-          if (staffData && staffData.length > 0) {
-            setStaff(staffData.map(person => ({
-              name: person.name,
-              position: person.position,
-              phone: person.phone,
-              email: person.email,
-              color: person.color || '#6366F1'
-            })));
-          }
-        } catch (staffError) {
-          console.error('Error fetching staff:', staffError);
-          setStaff(defaultStaff);
+        const response = await api.staff.getAll();
+        if (Array.isArray(response)) {
+          setStaff(response);
         }
-
-        setError(null);
-      } catch (err) {
-        console.error('Error fetching contacts data:', err);
-        setError('Не удалось загрузить данные о сотрудниках. Пожалуйста, попробуйте позже.');
+      } catch (error) {
+        console.error('Error fetching staff:', error);
+        setStaff(defaultStaff);
       } finally {
         setLoading(false);
       }
@@ -119,6 +105,10 @@ const Contacts = () => {
 
     fetchData();
   }, []);
+
+  const handleLoginClick = () => {
+    navigate('/login', { state: { from: '/contacts' } });
+  };
 
   return (
     <Box sx={{ bgcolor: '#F8FAFC', minHeight: '100vh' }}>
@@ -138,7 +128,7 @@ const Contacts = () => {
         <Button
           variant="outlined"
           startIcon={<ArrowBackIcon />}
-          onClick={() => navigate(-1)}
+          onClick={() => navigate('/')}
           sx={{
             borderRadius: '8px',
             borderColor: 'primary.main',
@@ -148,14 +138,14 @@ const Contacts = () => {
             }
           }}
         >
-          Назад
+          На главную
         </Button>
         <Stack direction="row" spacing={2}>
           {!isAuthenticated && (
             <Button
               variant="contained"
               startIcon={<LoginIcon />}
-              onClick={() => navigate('/login')}
+              onClick={handleLoginClick}
               sx={{
                 borderRadius: '8px',
                 background: 'linear-gradient(45deg, #1976d2 30%, #2196f3 90%)',
@@ -199,7 +189,7 @@ const Contacts = () => {
                 {/* Контактная информация */}
                 <Grid container spacing={3} sx={{ mb: 6 }}>
                   {contactInfo.map((item, index) => (
-                    <Grid item xs={12} sm={6} key={index}>
+                    <Grid item xs={12} sm={6} key={`contact-${item.title}-${index}`}>
                       <Card sx={{ 
                         height: '100%',
                         transition: 'transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
@@ -256,7 +246,7 @@ const Contacts = () => {
                   </Typography>
                   <Grid container spacing={3}>
                     {staff.map((person, index) => (
-                      <Grid item xs={12} key={index}>
+                      <Grid item xs={12} key={`staff-${person.name}-${index}`}>
                         <Card sx={{ 
                           transition: 'transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
                           '&:hover': {

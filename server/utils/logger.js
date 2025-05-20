@@ -1,16 +1,21 @@
 const logger = {
-    info: (...args) => {
-        console.log(new Date().toISOString(), '[INFO]', ...args);
-    },
-    error: (...args) => {
-        console.error(new Date().toISOString(), '[ERROR]', ...args);
-    },
-    warn: (...args) => {
-        console.warn(new Date().toISOString(), '[WARN]', ...args);
-    },
-    debug: (...args) => {
-        console.debug(new Date().toISOString(), '[DEBUG]', ...args);
+  info: (message, data = {}) => {
+    console.log(`[INFO] ${message}`, data);
+  },
+  
+  warn: (message, data = {}) => {
+    console.warn(`[WARN] ${message}`, data);
+  },
+  
+  error: (message, data = {}) => {
+    console.error(`[ERROR] ${message}`, data);
+  },
+  
+  debug: (message, data = {}) => {
+    if (process.env.NODE_ENV === 'development') {
+      console.debug(`[DEBUG] ${message}`, data);
     }
+  }
 };
 
 module.exports = logger; 

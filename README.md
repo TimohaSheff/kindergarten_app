@@ -1,121 +1,96 @@
-# Getting Started with Create React App
+# Kindergarten Application
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+Веб-приложение для управления детским садом
 
-## Available Scripts
+## Требования для локальной установки
 
-In the project directory, you can run:
+- Node.js (версия 14 или выше)
+- PostgreSQL (версия 13 или выше)
+- npm или yarn
 
-### `npm start`
+## Быстрый старт
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
-
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
-
-### `npm test`
-
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
-
-### `npm run build`
-
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
-
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
-
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
-
-### `npm run eject`
-
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
-
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
-
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
-
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
-
-## Learn More
-
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
-
-To learn React, check out the [React documentation](https://reactjs.org/).
-
-### Code Splitting
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
-
-### Analyzing the Bundle Size
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
-
-### Making a Progressive Web App
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
-
-# Инструкция по созданию базы данных детского сада
-
-## Требования
-- PostgreSQL 12 или выше
-- Доступ к серверу PostgreSQL с правами суперпользователя
-
-## Шаги по установке
-
-1. Убедитесь, что PostgreSQL установлен и запущен на вашем компьютере.
-
-2. Откройте командную строку (PowerShell или cmd) и выполните следующую команду:
+### 1. Скачайте проект
 ```bash
-psql -U postgres -f kindergarten_db.sql
+git clone https://github.com/your-username/kindergarten-app.git
+cd kindergarten-app
 ```
 
-3. При запросе введите пароль пользователя postgres.
+### 2. Настройка базы данных
 
-## Структура базы данных
+1. Установите PostgreSQL:
+   - Windows: Скачайте и установите с [официального сайта](https://www.postgresql.org/download/windows/)
+   - Mac: `brew install postgresql`
+   - Ubuntu: `sudo apt-get install postgresql`
 
-База данных содержит следующие таблицы:
-- users (пользователи: администраторы, воспитатели, родители)
-- groups (группы детского сада)
-- children (дети)
-- daily_schedule (расписание дня)
-- services (дополнительные услуги)
-- menu (меню)
-- attendance (посещаемость)
-- payments (платежи)
-- benefits (льготы)
-- progress_reports (отчеты о развитии)
-- recommendations (рекомендации)
-- child_services (записи на услуги)
-- child_benefits (льготы детей)
+2. Восстановите базу данных из резервной копии:
+```bash
+# Windows (запустите psql)
+createdb -U postgres kindergarten
+psql -U postgres kindergarten < kindergarten_backup.sql
 
-## Тестовые данные
+# Linux/Mac
+sudo -u postgres createdb kindergarten
+sudo -u postgres psql kindergarten < kindergarten_backup.sql
+```
 
-База данных заполнена тестовыми данными:
-- 3 группы (младшая, средняя, старшая)
-- 15 детей в каждой группе
-- 2 воспитателя на группу
-- 1 психолог
-- 1 администратор
-- Родители (по 1-3 ребенка на каждого)
-- 14 различных платных услуг (кружков)
-- Меню на текущий день
-- Расписание дня
-- Отчеты о развитии
-- Записи о посещаемости
-- Платежи
-- Льготы
+### 3. Настройка проекта
+
+1. Скопируйте файл с настройками:
+```bash
+cp .env.example .env
+```
+
+2. Отредактируйте `.env` файл:
+   - Укажите пароль от вашей базы данных PostgreSQL в `DB_PASSWORD`
+   - Остальные настройки можно оставить по умолчанию для локальной разработки
+
+### 4. Запуск сервера
+
+```bash
+# Перейдите в папку сервера
+cd server
+
+# Установите зависимости
+npm install
+
+# Запустите сервер
+npm run dev
+```
+
+### 5. Запуск клиента
+
+Откройте новое окно терминала и выполните:
+```bash
+# Перейдите в папку клиента
+cd client
+
+# Установите зависимости
+npm install
+
+# Запустите клиент
+npm start
+```
+
+### 6. Готово!
+
+- Откройте браузер и перейдите по адресу: http://localhost:3000
+- API сервер работает по адресу: http://localhost:5000
+
+## Возможные проблемы и решения
+
+### Ошибка подключения к базе данных
+- Проверьте, что PostgreSQL запущен
+- Проверьте правильность пароля в файле `.env`
+- Убедитесь, что база данных `kindergarten` создана
+
+### Ошибка "port already in use"
+- Проверьте, не запущено ли уже приложение
+- Измените порт в файле `.env` если нужно
+
+### Не работает авторизация
+- Проверьте, что в `.env` установлены корректные значения для JWT_SECRET и JWT_REFRESH_SECRET
+
+## Поддержка
+
+Если возникли проблемы при установке, создайте issue в репозитории проекта.

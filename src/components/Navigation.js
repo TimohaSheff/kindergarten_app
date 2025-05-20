@@ -14,7 +14,9 @@ import {
   Collapse,
   ListItemButton,
   Typography,
-  Button
+  Button,
+  AppBar,
+  Toolbar
 } from '@mui/material';
 import {
   Menu as MenuIcon,
@@ -30,7 +32,6 @@ import {
   Restaurant as RestaurantIcon,
   Settings as SettingsIcon,
   People as PeopleIcon,
-  AttachMoney as AttachMoneyIcon,
   LocalOffer as LocalOfferIcon,
   ExpandLess as ExpandLessIcon,
   ExpandMore as ExpandMoreIcon,
@@ -42,6 +43,24 @@ import { styled } from '@mui/material/styles';
 import { alpha } from '@mui/material/styles';
 
 const drawerWidth = 280;
+
+const StyledAppBar = styled(AppBar)(({ theme }) => ({
+  backgroundColor: 'white',
+  boxShadow: 'none',
+  borderBottom: '1px solid rgba(145, 107, 216, 0.12)',
+}));
+
+const StyledButton = styled(Button)(({ theme }) => ({
+  color: theme.palette.text.secondary,
+  '&:hover': {
+    color: theme.palette.primary.main,
+    backgroundColor: 'rgba(145, 107, 216, 0.04)',
+  },
+  '&.active': {
+    color: theme.palette.primary.main,
+    backgroundColor: 'rgba(145, 107, 216, 0.08)',
+  },
+}));
 
 const Navigation = () => {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -118,12 +137,6 @@ const Navigation = () => {
             icon: RestaurantIcon,
             path: '/menu',
             color: theme.palette.info.dark
-          },
-          {
-            text: 'Финансы',
-            icon: AttachMoneyIcon,
-            path: '/finance',
-            color: theme.palette.success.main
           },
           {
             text: 'Платные услуги',
@@ -208,12 +221,6 @@ const Navigation = () => {
             icon: RestaurantIcon,
             path: '/menu',
             color: theme.palette.info.dark
-          },
-          {
-            text: 'Финансы',
-            icon: AttachMoneyIcon,
-            path: '/finance',
-            color: theme.palette.success.main
           },
           {
             text: 'Платные услуги',
@@ -478,6 +485,13 @@ const Navigation = () => {
           zIndex: 1200
         }}
       >
+        <StyledAppBar position="sticky">
+          <Toolbar>
+            <Box sx={{ display: 'flex', gap: 2 }}>
+              {/* ... existing navigation items ... */}
+            </Box>
+          </Toolbar>
+        </StyledAppBar>
         {drawer}
       </Box>
     </>

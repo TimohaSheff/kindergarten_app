@@ -9,83 +9,149 @@ const { checkRole } = require('../middleware/roleCheck');
 router.get('/child/:child_id', [auth], async (req, res) => {
     try {
         const { child_id } = req.params;
+        const numericChildId = parseInt(child_id, 10);
+        const numericUserId = parseInt(req.user.user_id, 10);
+        
+        console.log('Запрос прогресса для ребенка:', {
+            child_id,
+            numericChildId,
+            user: {
+                id: req.user.user_id,
+                numericId: numericUserId,
+                role: req.user.role,
+                token: req.headers.authorization ? 'Present' : 'Missing'
+            }
+        });
         
         // Валидация child_id
-        if (!child_id || isNaN(parseInt(child_id))) {
+        if (!child_id || isNaN(numericChildId)) {
+            console.log('Некорректный ID ребенка:', child_id);
             return res.status(400).json({ message: 'Некорректный ID ребенка' });
         }
 
-        // Проверка существования ребенка
+        // Проверка существования ребенка и получение информации о нем
         const childResult = await db.query(
-            'SELECT child_id, name, group_id FROM children WHERE child_id = $1',
-            [child_id]
+            `SELECT c.child_id, c.name, c.group_id, c.parent_id, g.group_name 
+             FROM children c 
+             LEFT JOIN groups g ON c.group_id = g.group_id 
+             WHERE c.child_id = $1`,
+            [numericChildId]
         );
 
         if (!childResult.rows.length) {
+            console.log('Ребенок не найден:', numericChildId);
             return res.status(404).json({ message: 'Ребенок не найден' });
         }
 
         const child = childResult.rows[0];
+        console.log('Данные ребенка:', {
+            childId: child.child_id,
+            childName: child.name,
+            childParentId: child.parent_id,
+            requestingUserId: numericUserId,
+            requestingUserRole: req.user.role,
+            comparison: `${child.parent_id} === ${numericUserId}`,
+            typesMatch: typeof child.parent_id === typeof numericUserId
+        });
         
         // Проверка доступа (родитель может видеть только своего ребенка)
         if (req.user.role === 'parent') {
-            const isParent = await db.query(
-                'SELECT 1 FROM children WHERE child_id = $1 AND parent_id = $2',
-                [child_id, req.user.user_id]
-            );
-            if (!isParent.rows.length) {
-                return res.status(403).json({ message: 'Доступ запрещен' });
+            const isParentChild = child.parent_id === numericUserId;
+            console.log('Проверка прав доступа:', {
+                isParentChild,
+                childParentId: child.parent_id,
+                childParentIdType: typeof child.parent_id,
+                userId: numericUserId,
+                userIdType: typeof numericUserId
+            });
+            
+            if (!isParentChild) {
+                console.log('Доступ запрещен: несоответствие ID родителя');
+                return res.status(403).json({ 
+                    message: 'Доступ запрещен',
+                    details: 'Вы не являетесь родителем этого ребенка'
+                });
             }
         }
 
         // Получаем отчеты о прогрессе
-        const reports = await db.query(
-            `SELECT 
+        const progressQuery = `
+            SELECT 
                 report_id,
-                report_date,
+                child_id,
+                report_date::text as report_date,
                 details,
-                active_speech,
-                games,
-                art_activity,
-                constructive_activity,
-                sensory_development,
-                movement_skills,
-                height_cm,
-                weight_kg
+                COALESCE(active_speech, 0) as active_speech,
+                COALESCE(games, 0) as games,
+                COALESCE(art_activity, 0) as art_activity,
+                COALESCE(constructive_activity, 0) as constructive_activity,
+                COALESCE(sensory_development, 0) as sensory_development,
+                COALESCE(movement_skills, 0) as movement_skills,
+                COALESCE(height_cm, 0) as height_cm,
+                COALESCE(weight_kg, 0) as weight_kg
              FROM progress_reports
              WHERE child_id = $1
-             ORDER BY report_date DESC`,
-            [child_id]
-        );
+             ORDER BY report_date DESC`;
         
-        // Форматируем данные перед отправкой
-        const formattedReports = reports.rows.map(report => ({
-            report_id: report.report_id,
-            report_date: report.report_date ? new Date(report.report_date).toISOString() : null,
-            details: report.details,
-            active_speech: report.active_speech !== null ? Number(report.active_speech) : null,
-            games: report.games !== null ? Number(report.games) : null,
-            art_activity: report.art_activity !== null ? Number(report.art_activity) : null,
-            constructive_activity: report.constructive_activity !== null ? Number(report.constructive_activity) : null,
-            sensory_development: report.sensory_development !== null ? Number(report.sensory_development) : null,
-            movement_skills: report.movement_skills !== null ? Number(report.movement_skills) : null,
-            height_cm: report.height_cm !== null ? Number(report.height_cm) : null,
-            weight_kg: report.weight_kg !== null ? Number(report.weight_kg) : null
-        }));
+        const reports = await db.query(progressQuery, [numericChildId]);
         
-        res.json({
-            child: {
-                child_id: child.child_id,
-                name: child.name,
-                group_id: child.group_id
-            },
-            progress: formattedReports
+        // Группируем отчеты по годам и кварталам
+        const progressByYear = {};
+        
+        reports.rows.forEach(report => {
+            const [year, month] = report.report_date.split('-');
+            const monthNum = parseInt(month);
+            
+            // Определяем квартал
+            let quarter;
+            if (monthNum <= 3) quarter = 'q1';
+            else if (monthNum <= 6) quarter = 'q2';
+            else if (monthNum <= 9) quarter = 'q3';
+            else quarter = 'q4';
+            
+            // Создаем структуру для года если её нет
+            if (!progressByYear[year]) {
+                progressByYear[year] = {
+                    q1: null,
+                    q2: null,
+                    q3: null,
+                    q4: null
+                };
+            }
+            
+            // Сохраняем отчет в соответствующий квартал
+            progressByYear[year][quarter] = {
+                report_id: report.report_id,
+                report_date: report.report_date,
+                details: report.details || '',
+                active_speech: Number(report.active_speech) || 0,
+                games: Number(report.games) || 0,
+                art_activity: Number(report.art_activity) || 0,
+                constructive_activity: Number(report.constructive_activity) || 0,
+                sensory_development: Number(report.sensory_development) || 0,
+                movement_skills: Number(report.movement_skills) || 0,
+                height_cm: Number(report.height_cm) || 0,
+                weight_kg: Number(report.weight_kg) || 0
+            };
         });
+
+        // Добавляем текущий год, если его нет
+        const currentYear = new Date().getFullYear().toString();
+        if (!progressByYear[currentYear]) {
+            progressByYear[currentYear] = {
+                q1: null,
+                q2: null,
+                q3: null,
+                q4: null
+            };
+        }
+
+        res.json(progressByYear);
     } catch (err) {
-        console.error('Ошибка при получении прогресса ребенка:', err);
+        console.error('Ошибка при получении прогресса:', err);
         res.status(500).json({ 
             message: 'Ошибка сервера',
-            details: process.env.NODE_ENV === 'development' ? err.message : undefined
+            error: err.message
         });
     }
 });
@@ -127,35 +193,97 @@ router.get('/group/:group_id', [auth], async (req, res) => {
 
 // Создать новый отчет о прогрессе
 router.post('/', [
-    auth, 
+    auth,
     checkRole(['admin', 'psychologist']),
-    body('child_id').isInt(),
-    body('category').isString(),
-    body('score').isFloat({ min: 0 }),
-    body('notes').optional().trim().isLength({ max: 1000 }),
-    body('height_cm').optional().isFloat({ min: 30, max: 200 }),
-    body('weight_kg').optional().isFloat({ min: 2, max: 100 })
+    body('child_id').isInt().withMessage('ID ребенка должен быть числом'),
+    body('report_date').isString().withMessage('Неверный формат даты'),
+    body('active_speech').optional().isFloat({ min: 0, max: 10 }),
+    body('games').optional().isFloat({ min: 0, max: 10 }),
+    body('art_activity').optional().isFloat({ min: 0, max: 10 }),
+    body('constructive_activity').optional().isFloat({ min: 0, max: 10 }),
+    body('sensory_development').optional().isFloat({ min: 0, max: 10 }),
+    body('movement_skills').optional().isFloat({ min: 0, max: 10 }),
+    body('height_cm').optional().isFloat({ min: 0 }),
+    body('weight_kg').optional().isFloat({ min: 0 }),
+    body('details').optional().isString()
 ], async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-    }
-
     try {
-        const { child_id, category, score, notes, height_cm, weight_kg } = req.body;
+        console.log('Получен запрос на создание прогресса:', req.body);
         
-        const report = await db.query(
-            `INSERT INTO progress_reports 
-             (child_id, report_date, category, score, notes, teacher_id, height_cm, weight_kg)
-             VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7)
-             RETURNING *`,
-            [child_id, category, score, notes, req.user.user_id, height_cm, weight_kg]
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            console.error('Ошибки валидации:', errors.array());
+            return res.status(400).json({ 
+                message: 'Ошибка валидации данных',
+                errors: errors.array() 
+            });
+        }
+
+        const { child_id, report_date, ...progressData } = req.body;
+
+        // Проверяем существование ребенка
+        const childExists = await db.query(
+            'SELECT * FROM children WHERE child_id = $1',
+            [child_id]
         );
-        
-        res.status(201).json(report.rows[0]);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: 'Ошибка сервера' });
+
+        if (childExists.rows.length === 0) {
+            console.error('Ребенок не найден:', child_id);
+            return res.status(404).json({ message: 'Ребенок не найден' });
+        }
+
+        console.log('Подготовка данных для вставки:', {
+            child_id,
+            report_date,
+            progressData
+        });
+
+        // Создаем запись о прогрессе
+        const result = await db.query(
+            `INSERT INTO progress_reports 
+             (child_id, report_date, active_speech, games, art_activity, 
+              constructive_activity, sensory_development, 
+              movement_skills, height_cm, weight_kg, details)
+             VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             RETURNING *`,
+            [
+                child_id,
+                report_date,
+                progressData.active_speech || null,
+                progressData.games || null,
+                progressData.art_activity || null,
+                progressData.constructive_activity || null,
+                progressData.sensory_development || null,
+                progressData.movement_skills || null,
+                progressData.height_cm || null,
+                progressData.weight_kg || null,
+                progressData.details || null
+            ]
+        );
+
+        console.log('Запись успешно создана:', result.rows[0]);
+
+        // Форматируем дату в ответе
+        const response = {
+            ...result.rows[0],
+            report_date: result.rows[0].report_date.toISOString().split('T')[0]
+        };
+
+        res.status(201).json(response);
+    } catch (error) {
+        console.error('Ошибка при создании записи о прогрессе:', error);
+        console.error('Детали запроса:', {
+            body: req.body,
+            user: req.user,
+            error: {
+                message: error.message,
+                stack: error.stack
+            }
+        });
+        res.status(500).json({ 
+            message: 'Внутренняя ошибка сервера при создании записи о прогрессе',
+            error: error.message 
+        });
     }
 });
 
@@ -250,21 +378,20 @@ router.post('/child/:child_id/quarter/:quarter', [
     }
 });
 
-// Создать новый отчет о прогрессе
-router.post('/create', [
-    checkRole(['admin', 'psychologist']),
+// Обновить запись о прогрессе
+router.put('/:id', checkRole(['teacher', 'admin', 'psychologist']), [
+    param('id').isInt().withMessage('ID отчета должен быть числом'),
     body('child_id').isInt().withMessage('ID ребенка должен быть числом'),
-    body('report_date').isDate().withMessage('Неверный формат даты'),
-    body('active_speech').optional().isInt({ min: 1, max: 10 }),
-    body('games').optional().isInt({ min: 1, max: 10 }),
-    body('art_activity').optional().isInt({ min: 1, max: 10 }),
-    body('constructive_activity').optional().isInt({ min: 1, max: 10 }),
-    body('sensory_development').optional().isInt({ min: 1, max: 10 }),
-    body('naming_skills').optional().isInt({ min: 1, max: 10 }),
-    body('movement_skills').optional().isInt({ min: 1, max: 10 }),
-    body('height_cm').optional().isFloat({ min: 0 }),
-    body('weight_kg').optional().isFloat({ min: 0 }),
-    body('details').optional().isString()
+    body('report_date').isString().withMessage('Дата должна быть строкой'),
+    body('details').optional(),
+    body('active_speech').optional().isFloat({ min: 0, max: 10 }).withMessage('Значение должно быть от 0 до 10'),
+    body('games').optional().isFloat({ min: 0, max: 10 }).withMessage('Значение должно быть от 0 до 10'),
+    body('art_activity').optional().isFloat({ min: 0, max: 10 }).withMessage('Значение должно быть от 0 до 10'),
+    body('constructive_activity').optional().isFloat({ min: 0, max: 10 }).withMessage('Значение должно быть от 0 до 10'),
+    body('sensory_development').optional().isFloat({ min: 0, max: 10 }).withMessage('Значение должно быть от 0 до 10'),
+    body('movement_skills').optional().isFloat({ min: 0, max: 10 }).withMessage('Значение должно быть от 0 до 10'),
+    body('height_cm').optional().isFloat({ min: 0, max: 200 }).withMessage('Рост должен быть от 0 до 200 см'),
+    body('weight_kg').optional().isFloat({ min: 0, max: 100 }).withMessage('Вес должен быть от 0 до 100 кг')
 ], async (req, res) => {
     try {
         const errors = validationResult(req);
@@ -272,7 +399,38 @@ router.post('/create', [
             return res.status(400).json({ errors: errors.array() });
         }
 
-        const { child_id, report_date, ...progressData } = req.body;
+        const { 
+            child_id, 
+            report_date, 
+            details,
+            active_speech,
+            games,
+            art_activity,
+            constructive_activity,
+            sensory_development,
+            movement_skills,
+            height_cm,
+            weight_kg
+        } = req.body;
+
+        // Простое форматирование: берем только дату без времени
+        let formattedDate = report_date;
+        if (report_date && report_date.includes('T')) {
+            formattedDate = report_date.split('T')[0];
+        }
+
+        console.log('Полученная дата:', report_date);
+        console.log('Сохраняемая дата:', formattedDate);
+
+        // Проверяем существование записи
+        const existingReport = await db.query(
+            'SELECT * FROM progress_reports WHERE report_id = $1',
+            [req.params.id]
+        );
+
+        if (existingReport.rows.length === 0) {
+            return res.status(404).json({ error: 'Запись не найдена' });
+        }
 
         // Проверяем существование ребенка
         const childExists = await db.query(
@@ -284,109 +442,64 @@ router.post('/create', [
             return res.status(404).json({ error: 'Ребенок не найден' });
         }
 
-        // Создаем запись о прогрессе
         const result = await db.query(
-            `INSERT INTO progress_reports 
-             (child_id, report_date, active_speech, games, art_activity, 
-              constructive_activity, sensory_development, naming_skills, 
-              movement_skills, height_cm, weight_kg, details)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-             RETURNING *`,
+            `UPDATE progress_reports SET 
+                child_id = $1,
+                report_date = $2::date,
+                details = $3,
+                active_speech = $4,
+                games = $5,
+                art_activity = $6,
+                constructive_activity = $7,
+                sensory_development = $8,
+                movement_skills = $9,
+                height_cm = $10,
+                weight_kg = $11
+            WHERE report_id = $12 
+            RETURNING *`,
             [
                 child_id,
-                report_date,
-                progressData.active_speech || null,
-                progressData.games || null,
-                progressData.art_activity || null,
-                progressData.constructive_activity || null,
-                progressData.sensory_development || null,
-                progressData.naming_skills || null,
-                progressData.movement_skills || null,
-                progressData.height_cm || null,
-                progressData.weight_kg || null,
-                progressData.details || null
+                formattedDate,
+                details || 'Отчет о прогрессе',
+                active_speech || null,
+                games || null,
+                art_activity || null,
+                constructive_activity || null,
+                sensory_development || null,
+                movement_skills || null,
+                height_cm || null,
+                weight_kg || null,
+                req.params.id
             ]
         );
 
-        res.json(result.rows[0]);
-    } catch (error) {
-        console.error('Ошибка при создании записи о прогрессе:', error);
-        res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-    }
-});
-
-// Обновить запись о прогрессе
-router.put('/:report_id', [
-    auth,
-    checkRole(['admin', 'psychologist']),
-    param('report_id').isInt(),
-    body('report_date').isDate(),
-    body('active_speech').optional().isInt({ min: 1, max: 10 }),
-    body('games').optional().isInt({ min: 1, max: 10 }),
-    body('art_activity').optional().isInt({ min: 1, max: 10 }),
-    body('constructive_activity').optional().isInt({ min: 1, max: 10 }),
-    body('sensory_development').optional().isInt({ min: 1, max: 10 }),
-    body('naming_skills').optional().isInt({ min: 1, max: 10 }),
-    body('movement_skills').optional().isInt({ min: 1, max: 10 }),
-    body('height_cm').optional().isFloat({ min: 0 }),
-    body('weight_kg').optional().isFloat({ min: 0 }),
-    body('details').optional().isString()
-], async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ errors: errors.array() });
+        if (result.rows.length === 0) {
+            throw new Error('Не удалось обновить запись');
         }
 
-        const { report_id } = req.params;
-        const updateData = req.body;
+        // Сохраняем данные как есть, просто форматируем дату в строку без времени
+        const response = {
+            ...result.rows[0]
+        };
 
-        // Проверяем существование записи
-        const existingReport = await db.query(
-            'SELECT * FROM progress_reports WHERE report_id = $1',
-            [report_id]
-        );
-
-        if (existingReport.rows.length === 0) {
-            return res.status(404).json({ message: 'Запись не найдена' });
+        // Простое преобразование даты в строку без времени с проверкой
+        if (response.report_date) {
+            response.report_date = response.report_date.toISOString ? 
+                response.report_date.toISOString().split('T')[0] : 
+                String(response.report_date).split('T')[0];
         }
 
-        // Обновляем запись
-        const result = await db.query(
-            `UPDATE progress_reports 
-             SET report_date = $1,
-                 active_speech = $2,
-                 games = $3,
-                 art_activity = $4,
-                 constructive_activity = $5,
-                 sensory_development = $6,
-                 naming_skills = $7,
-                 movement_skills = $8,
-                 height_cm = $9,
-                 weight_kg = $10,
-                 details = $11
-             WHERE report_id = $12
-             RETURNING *`,
-            [
-                updateData.report_date,
-                updateData.active_speech,
-                updateData.games,
-                updateData.art_activity,
-                updateData.constructive_activity,
-                updateData.sensory_development,
-                updateData.naming_skills,
-                updateData.movement_skills,
-                updateData.height_cm,
-                updateData.weight_kg,
-                updateData.details,
-                report_id
-            ]
-        );
-
-        res.json(result.rows[0]);
+        res.json(response);
     } catch (error) {
-        console.error('Ошибка при обновлении записи о прогрессе:', error);
-        res.status(500).json({ message: 'Ошибка сервера' });
+        console.error('Ошибка при обновлении записи прогресса:', error);
+        console.error('Детали запроса:', {
+            id: req.params.id,
+            body: req.body
+        });
+        res.status(500).json({ 
+            message: 'Ошибка сервера при обновлении записи прогресса',
+            error: error.message 
+        });
     }
 });
 

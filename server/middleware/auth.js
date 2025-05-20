@@ -1,32 +1,73 @@
 const jwt = require('jsonwebtoken');
-const { query } = require('../config/db');
+const logger = require('../utils/logger');
+require('dotenv').config();
 
-const authenticateToken = (req, res, next) => {
-    console.log('Аутентификация - начало');
-    console.log('Headers:', req.headers);
-    
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+    logger.error('JWT_SECRET не установлен в переменных окружения');
+    process.exit(1);
+}
 
-    console.log('Токен из заголовка:', token);
-
-    if (!token) {
-        console.log('Токен не найден');
-        return res.status(401).json({ message: 'Требуется аутентификация' });
-    }
-
+module.exports = (req, res, next) => {
     try {
-        console.log('Попытка верификации токена');
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        console.log('Декодированный токен:', decoded);
-        
-        req.user = decoded;
-        console.log('Пользователь установлен в req.user:', req.user);
-        next();
-    } catch (error) {
-        console.error('Ошибка при верификации токена:', error);
-        return res.status(403).json({ message: 'Недействительный токен' });
-    }
-};
+        const authHeader = req.headers.authorization;
+        if (!authHeader) {
+            logger.debug('Отсутствует заголовок Authorization');
+            return res.status(401).json({ 
+                message: 'Отсутствует токен авторизации',
+                details: 'Заголовок Authorization не найден'
+            });
+        }
 
-module.exports = authenticateToken; 
+        const token = authHeader.split(' ')[1];
+        if (!token) {
+            logger.debug('Токен не найден в заголовке Authorization');
+            return res.status(401).json({ 
+                message: 'Отсутствует токен авторизации',
+                details: 'Токен не найден в заголовке'
+            });
+        }
+
+        try {
+            const decoded = jwt.verify(token, JWT_SECRET);
+            logger.debug('Токен успешно проверен', { 
+                userId: decoded.id,
+                role: decoded.role
+            });
+            req.user = {
+                user_id: String(decoded.id),
+                role: decoded.role
+            };
+            logger.debug('Пользователь установлен в req', { 
+                user: req.user
+            });
+            next();
+        } catch (jwtError) {
+            logger.debug('Ошибка проверки токена:', { 
+                error: jwtError.message,
+                name: jwtError.name
+            });
+
+            if (jwtError.name === 'TokenExpiredError') {
+                return res.status(401).json({ 
+                    message: 'Срок действия токена истек',
+                    details: 'Необходимо выполнить повторный вход'
+                });
+            }
+
+            return res.status(401).json({ 
+                message: 'Недействительный токен',
+                details: process.env.NODE_ENV === 'development' ? jwtError.message : undefined
+            });
+        }
+    } catch (error) {
+        logger.error('Ошибка в middleware аутентификации:', {
+            error: error.message,
+            stack: error.stack
+        });
+        return res.status(500).json({ 
+            message: 'Ошибка сервера при проверке аутентификации',
+            details: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+}; 

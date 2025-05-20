@@ -2,117 +2,122 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const logger = require('./utils/logger');
 
 const app = express();
 
 // Настройка CORS
 app.use(cors());
 
-// Парсинг JSON с увеличенным лимитом
-app.use(express.json({ limit: '50mb' }));
-
-// Создаем директорию для загрузок, если она не существует
-const uploadsDir = path.join(__dirname, '../uploads');
-const photosDir = path.join(uploadsDir, 'photos');
-
-if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
-    console.log('Created uploads directory:', uploadsDir);
-}
-
-if (!fs.existsSync(photosDir)) {
-    fs.mkdirSync(photosDir, { recursive: true });
-    console.log('Created photos directory:', photosDir);
-}
-
-// Логирование запросов к статическим файлам
-app.use('/uploads', (req, res, next) => {
-    const fullPath = path.join(__dirname, '..', req.url);
-    const exists = fs.existsSync(fullPath);
-    
-    console.log('Static file request:', {
-        url: req.url,
-        fullPath,
-        exists,
+// Централизованное логирование запросов
+app.use((req, res, next) => {
+    logger.info('Входящий запрос', {
         method: req.method,
-        headers: req.headers
+        url: req.url,
+        query: req.query,
+        params: req.params
     });
-
-    if (!exists) {
-        console.error('File not found:', fullPath);
-        return res.status(404).json({ error: 'File not found' });
-    }
-
-    // Проверяем права доступа к файлу
-    try {
-        fs.accessSync(fullPath, fs.constants.R_OK);
-    } catch (err) {
-        console.error('File access error:', err);
-        return res.status(403).json({ error: 'Access denied' });
-    }
-
     next();
 });
 
+// Парсинг JSON с увеличенным лимитом
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
 // Настройка статических файлов
-app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads'), {
-    setHeaders: (res, filePath) => {
-        // Устанавливаем правильные заголовки CORS
-        res.set('Access-Control-Allow-Origin', '*');
-        res.set('Access-Control-Allow-Methods', 'GET');
-        
-        // Устанавливаем правильный Content-Type для изображений
-        if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) {
-            res.set('Content-Type', 'image/jpeg');
-        } else if (filePath.endsWith('.png')) {
-            res.set('Content-Type', 'image/png');
-        } else if (filePath.endsWith('.webp')) {
-            res.set('Content-Type', 'image/webp');
-        }
-        
-        // Отключаем кэширование для отладки
-        res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-        res.set('Pragma', 'no-cache');
-        res.set('Expires', '0');
+const uploadsDir = path.join(__dirname, 'uploads');
+
+// Создаем директорию при запуске
+if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    logger.info('Создана директория:', uploadsDir);
+}
+
+// Проверяем содержимое директории uploads
+fs.readdir(uploadsDir, (err, files) => {
+    if (err) {
+        logger.error('Ошибка при чтении директории uploads:', err);
+    } else {
+        logger.info('Содержимое директории uploads:', {
+            directory: uploadsDir,
+            files: files
+        });
+        // Проверяем каждый файл
+        files.forEach(file => {
+            const filePath = path.join(uploadsDir, file);
+            try {
+                const stats = fs.statSync(filePath);
+                logger.info('Информация о файле:', {
+                    name: file,
+                    path: filePath,
+                    size: stats.size,
+                    isFile: stats.isFile(),
+                    permissions: stats.mode.toString(8),
+                    created: stats.birthtime,
+                    modified: stats.mtime
+                });
+            } catch (error) {
+                logger.error('Ошибка при проверке файла:', {
+                    file,
+                    error: error.message
+                });
+            }
+        });
+    }
+});
+
+// Настройка обработки статических файлов
+app.use('/uploads', express.static(uploadsDir, {
+    setHeaders: (res) => {
+        res.set({
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0'
+        });
     }
 }));
 
-// Обработка ошибок для статических файлов
-app.use((err, req, res, next) => {
-    console.error('Server error:', {
-        error: err.message,
-        stack: err.stack,
-        url: req.url,
-        method: req.method
+// Логирование запросов к файлам
+app.use('/uploads', (req, res, next) => {
+    const requestedPath = req.path;
+    const fullPath = path.join(uploadsDir, requestedPath);
+    
+    logger.info('Запрос файла:', {
+        requestedPath,
+        fullPath,
+        exists: fs.existsSync(fullPath),
+        method: req.method,
+        headers: req.headers,
+        dirContents: {
+            uploads: fs.existsSync(uploadsDir) ? fs.readdirSync(uploadsDir) : []
+        }
     });
     
-    if (err.status === 404) {
-        res.status(404).json({ error: 'File not found' });
-    } else {
-        res.status(500).json({ error: 'Internal server error' });
-    }
+    next();
 });
 
-// Глобальный обработчик ошибок
+// Подключаем маршрутизаторы
+const authRouter = require('./routes/auth');
+const usersRouter = require('./routes/users');
+const childrenRouter = require('./routes/children');
+const groupsRouter = require('./routes/groups');
+const servicesRouter = require('./routes/services');
+const menuRouter = require('./routes/menu');
+
+app.use('/api/auth', authRouter);
+app.use('/api/users', usersRouter);
+app.use('/api/children', childrenRouter);
+app.use('/api/groups', groupsRouter);
+app.use('/api/services', servicesRouter);
+app.use('/api/menu', menuRouter);
+
+// Обработка ошибок
 app.use((err, req, res, next) => {
-    console.error('Глобальная ошибка:', {
-        message: err.message,
-        stack: err.stack,
-        path: req.path,
-        method: req.method,
-        body: req.body,
-        headers: req.headers,
-        user: req.user
-    });
-
-    if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
-        return res.status(400).json({ error: 'Неверный формат JSON' });
-    }
-
+    logger.error('Ошибка сервера:', err);
     res.status(500).json({
         error: 'Внутренняя ошибка сервера',
-        message: process.env.NODE_ENV === 'development' ? err.message : 'Произошла ошибка'
+        message: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
 });
 
-// ... existing code ... 
+module.exports = app; 

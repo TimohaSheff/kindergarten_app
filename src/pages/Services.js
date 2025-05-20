@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Box,
   Typography,
@@ -30,6 +30,12 @@ import {
   CardActions,
   Tooltip,
   MenuItem,
+  FormControl,
+  InputLabel,
+  Select,
+  FormHelperText,
+  Checkbox,
+  CircularProgress,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -56,6 +62,7 @@ import { styled } from '@mui/material/styles';
 import { alpha } from '@mui/material/styles';
 import Attendance from './Attendance';
 import { api } from '../api/api';
+import { useOutletContext } from 'react-router-dom';
 
 // Обновленная группировка направлений
 const directionGroups = {
@@ -102,14 +109,23 @@ const StyledCardContent = styled(CardContent)({
   }
 });
 
-const Services = ({ canEdit, canManageRequests }) => {
+const daysOfWeek = [
+  'Понедельник',
+  'Вторник',
+  'Среда',
+  'Четверг',
+  'Пятница'
+];
+
+const Services = () => {
   const { user } = useAuth();
   const theme = useTheme();
+  const { PageTitle } = useOutletContext();
   
   // Обновляем проверку роли пользователя - только админ и воспитатель
   const hasEditRights = user?.role === 'admin' || user?.role === 'teacher';
-  const canEditServices = hasEditRights || canEdit;
-  const canManageServiceRequests = hasEditRights || canManageRequests;
+  const canEditServices = hasEditRights;
+  const canManageServiceRequests = hasEditRights;
 
   const [selectedTab, setSelectedTab] = useState(0);
   const [services, setServices] = useState([]);
@@ -124,39 +140,86 @@ const Services = ({ canEdit, canManageRequests }) => {
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [selectedChild, setSelectedChild] = useState(null);
+  const [children, setChildren] = useState([]);
+  const [selectedDays, setSelectedDays] = useState([]);
+  const [selectedTime, setSelectedTime] = useState({
+    start: '',
+    end: ''
+  });
+  const [teachersList, setTeachersList] = useState([]);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
         setLoading(true);
+        setError(null);
 
-        // Загрузка услуг
-        const servicesData = await api.getServices();
-        setServices(servicesData || []);
-
-        // Загрузка заявок на услуги
-        if (canManageServiceRequests || user.role === 'parent') {
-          const requestsData = await api.getServiceRequests();
-          
-          // Для родителей фильтруем только их заявки
-          if (user.role === 'parent') {
-            setRequests(requestsData.filter(req => req.parentId === user.id));
-          } else {
-            setRequests(requestsData);
-          }
+        // Загружаем список услуг
+        const servicesResponse = await api.services.getAll();
+        console.log('Raw services data:', servicesResponse);
+        console.log('Services data type:', typeof servicesResponse);
+        console.log('Is array:', Array.isArray(servicesResponse.data));
+        
+        if (servicesResponse?.data) {
+          setServices(servicesResponse.data);
         }
 
-        setError(null);
-      } catch (err) {
-        console.error('Error fetching data:', err);
-        setError(err.message || 'Ошибка при загрузке данных');
-      } finally {
+        // Загружаем заявки на услуги
+        console.log('Fetching service requests...');
+        const requestsResponse = await api.serviceRequests.getAll();
+        console.log('Received requests data:', requestsResponse);
+        if (requestsResponse?.data) {
+          setRequests(requestsResponse.data);
+        }
+
+        // Если пользователь - родитель, загружаем только его детей
+        if (user.role === 'parent') {
+          console.log('Fetching children for parent:', user.user_id);
+          const parentId = parseInt(String(user.user_id).trim());
+          if (isNaN(parentId)) {
+            throw new Error('Некорректный ID родителя');
+          }
+          const childrenResponse = await api.children.getAll({ parent_id: parentId });
+          console.log('Received children data:', childrenResponse);
+          if (childrenResponse?.data) {
+            // Фильтруем уникальных детей по child_id
+            const uniqueChildren = childrenResponse.data.filter((child, index, self) =>
+              index === self.findIndex((c) => c.child_id === child.child_id)
+            );
+            console.log('Filtered unique children:', uniqueChildren);
+            setChildren(uniqueChildren);
+          }
+          // Для родителя не загружаем список учителей
+          return;
+        }
+
+        // Для остальных ролей загружаем список учителей
+        try {
+          const teachersResponse = await api.users.getAll({ include_children: true });
+          if (teachersResponse?.data) {
+            setTeachersList(teachersResponse.data);
+          }
+        } catch (error) {
+          console.log('Error fetching teachers:', error);
+          // Не показываем ошибку пользователю, так как это не критично для работы
+        }
+
         setLoading(false);
+      } catch (error) {
+        console.error('Error fetching data:', error);
+        setError(error);
+        setLoading(false);
+        setSnackbar({
+          open: true,
+          message: error.message || 'Ошибка при загрузке данных',
+          severity: 'error'
+        });
       }
     };
 
     fetchData();
-  }, [user, canManageServiceRequests]);
+  }, [user.role, canManageServiceRequests]);
 
   const handleAddService = () => {
     setEditingService({
@@ -168,19 +231,36 @@ const Services = ({ canEdit, canManageRequests }) => {
       days_of_week: '',
       time: '',
       teachers: '',
-      category: ''
+      category: Object.keys(directionGroups)[0]
     });
+    setSelectedDays([]);
+    setSelectedTime({ start: '', end: '' });
     setOpenDialog(true);
     setServiceDetailsOpen(false);
   };
 
   const handleEditService = (service) => {
+    console.log('Editing service:', service);
+    
     // Преобразуем числовые значения в строки для полей формы
     setEditingService({
       ...service,
-      price: service.price.toString(),
-      total_price: service.total_price.toString()
+      price: service.price?.toString() || '',
+      total_price: service.total_price?.toString() || '',
+      category: service.category || Object.keys(directionGroups)[0],
+      days_of_week: service.days_of_week || '',
+      time: service.time || '',
+      teachers: service.teachers || ''
     });
+    
+    // Инициализируем дни недели
+    const daysArray = service.days_of_week ? service.days_of_week.split(', ').filter(day => daysOfWeek.includes(day)) : [];
+    setSelectedDays(daysArray);
+    
+    // Инициализируем время
+    const [start = '', end = ''] = service.time ? service.time.split('-') : [];
+    setSelectedTime({ start, end });
+    
     setOpenDialog(true);
     setServiceDetailsOpen(false);
   };
@@ -194,34 +274,44 @@ const Services = ({ canEdit, canManageRequests }) => {
     try {
       setLoading(true);
       
+      console.log('Original service data:', service);
+      
+      // Проверяем и форматируем данные перед отправкой
       const serviceData = {
-        service_name: service.service_name,
-        description: service.description,
+        service_name: service.service_name.trim(),
+        description: service.description.trim(),
         price: parseFloat(service.price),
-        duration: service.duration,
+        duration: service.duration.trim(),
         total_price: parseFloat(service.total_price),
-        days_of_week: service.days_of_week,
-        time: service.time,
-        teachers: service.teachers,
+        days_of_week: selectedDays.join(', '),
+        time: `${selectedTime.start}-${selectedTime.end}`,
+        teachers: service.teachers || '',
         category: service.category
       };
+
+      console.log('Formatted service data:', serviceData);
       
       if (service.service_id) {
-        await api.updateService(service.service_id, serviceData);
+        console.log('Updating service:', service.service_id);
+        const response = await api.services.update(service.service_id, serviceData);
+        console.log('Update response:', response);
       } else {
-        await api.createService(serviceData);
+        console.log('Creating new service');
+        const response = await api.services.create(serviceData);
+        console.log('Create response:', response);
       }
 
       // Обновляем список услуг
-      const servicesData = await api.getServices();
-      setServices(servicesData || []);
+      const servicesData = await api.services.getAll();
+      console.log('Updated services data:', servicesData);
+      setServices(servicesData?.data || []);
     
-    setSnackbar({
-      open: true,
-      message: 'Услуга успешно сохранена',
-      severity: 'success'
-    });
-    setOpenDialog(false);
+      setSnackbar({
+        open: true,
+        message: 'Услуга успешно сохранена',
+        severity: 'success'
+      });
+      setOpenDialog(false);
     } catch (err) {
       console.error('Error saving service:', err);
       setSnackbar({
@@ -237,11 +327,11 @@ const Services = ({ canEdit, canManageRequests }) => {
   const handleDeleteService = async (serviceId) => {
     try {
       setLoading(true);
-      await api.deleteService(serviceId);
+      await api.services.delete(serviceId);
 
       // Обновляем список услуг
-      const servicesData = await api.getServices();
-      setServices(servicesData || []);
+      const servicesData = await api.services.getAll();
+      setServices(servicesData?.data || []);
 
       setSnackbar({
         open: true,
@@ -262,35 +352,106 @@ const Services = ({ canEdit, canManageRequests }) => {
   };
 
   const handleOpenEnrollDialog = (service) => {
-    setSelectedService(service);
+    // Преобразуем ID услуги в число
+    const serviceWithNumericId = {
+      ...service,
+      service_id: parseInt(String(service.service_id).trim())
+    };
+    console.log('Opening enroll dialog for service:', serviceWithNumericId);
+    
+    setSelectedService(serviceWithNumericId);
+    setSelectedChild(null);
     setEnrollDialog(true);
     setServiceDetailsOpen(false);
+
+    // Загружаем список детей для родителя
+    if (user.role === 'parent') {
+      const fetchChildren = async () => {
+        try {
+          setLoading(true);
+          const parentId = parseInt(String(user.user_id).trim());
+          if (isNaN(parentId)) {
+            throw new Error('Некорректный ID родителя');
+          }
+          const response = await api.children.getAll({ parent_id: parentId });
+          console.log('Received children data:', response);
+          if (response?.data) {
+            // Фильтруем уникальных детей по child_id и преобразуем их ID в числа
+            const uniqueChildren = response.data
+              .filter((child, index, self) =>
+                index === self.findIndex((c) => c.child_id === child.child_id)
+              )
+              .map(child => ({
+                ...child,
+                child_id: parseInt(String(child.child_id).trim())
+              }));
+            console.log('Filtered unique children:', uniqueChildren);
+            setChildren(uniqueChildren);
+          }
+        } catch (error) {
+          console.error('Error fetching children:', error);
+          setSnackbar({
+            open: true,
+            message: error.message || 'Ошибка при загрузке списка детей',
+            severity: 'error'
+          });
+        } finally {
+          setLoading(false);
+        }
+      };
+      fetchChildren();
+    }
   };
 
-  const handleEnrollRequest = async (serviceId) => {
+  const handleEnrollRequest = async (serviceId, childId) => {
     try {
       setLoading(true);
-      await api.createServiceRequest(serviceId);
+      console.log('Отправка заявки:', { serviceId, childId });
 
-      // Обновляем список заявок
-      const requestsData = await api.getServiceRequests();
-      if (user.role === 'parent') {
-        setRequests(requestsData.filter(req => req.parentId === user.id));
-      } else {
-        setRequests(requestsData);
+      // Проверяем наличие обязательных параметров
+      if (!serviceId || !childId) {
+        throw new Error('Необходимо указать service_id и child_id');
       }
 
-    setSnackbar({
-      open: true,
-        message: 'Заявка успешно отправлена',
-      severity: 'success'
-    });
-      setEnrollDialog(false);
-    } catch (err) {
-      console.error('Error creating request:', err);
+      // Преобразуем ID в числа, удаляя возможные пробелы
+      const numericServiceId = parseInt(String(serviceId).trim());
+      const numericChildId = parseInt(String(childId).trim());
+
+      // Проверяем корректность преобразования
+      if (isNaN(numericServiceId) || isNaN(numericChildId)) {
+        throw new Error('Некорректный формат ID услуги или ребенка');
+      }
+
+      console.log('Отправка заявки с преобразованными ID:', {
+        service_id: numericServiceId,
+        child_id: numericChildId
+      });
+
+      const response = await api.serviceRequests.create({
+        service_id: numericServiceId,
+        child_id: numericChildId
+      });
+
+      console.log('Ответ сервера:', response);
+
+      if (response.status === 201 || response.status === 200) {
+        // Обновляем список заявок
+        const requestsData = await api.serviceRequests.getAll();
+        setRequests(requestsData?.data || []);
+
+        setSnackbar({
+          open: true,
+          message: 'Заявка успешно отправлена',
+          severity: 'success'
+        });
+        setEnrollDialog(false);
+        setSelectedChild(null);
+      }
+    } catch (error) {
+      console.error('Ошибка при отправке заявки:', error);
       setSnackbar({
         open: true,
-        message: err.message || 'Ошибка при отправке заявки',
+        message: error.response?.data?.message || 'Ошибка при отправке заявки',
         severity: 'error'
       });
     } finally {
@@ -300,164 +461,262 @@ const Services = ({ canEdit, canManageRequests }) => {
 
   const handleApproveRequest = async (requestId) => {
     try {
-      setLoading(true);
-      await api.approveServiceRequest(requestId);
-
+      await api.serviceRequests.approve(requestId);
+      
       // Обновляем список заявок
-      const requestsData = await api.getServiceRequests();
-      setRequests(requestsData);
-
-      // Обновляем список услуг
-      const servicesData = await api.getServices();
-      setServices(servicesData || []);
-
-    setSnackbar({
-      open: true,
-        message: 'Заявка успешно одобрена',
-      severity: 'success'
-    });
-    } catch (err) {
-      console.error('Error approving request:', err);
+      const requestsData = await api.serviceRequests.getAll();
+      setRequests(requestsData || []);
+      
       setSnackbar({
         open: true,
-        message: err.message || 'Ошибка при одобрении заявки',
+        message: 'Заявка успешно одобрена',
+        severity: 'success'
+      });
+    } catch (error) {
+      console.error('Error approving service request:', error);
+      setSnackbar({
+        open: true,
+        message: error.message || 'Ошибка при одобрении заявки',
         severity: 'error'
       });
-    } finally {
-      setLoading(false);
     }
   };
 
   const handleRejectRequest = async (requestId) => {
     try {
-      setLoading(true);
-      await api.rejectServiceRequest(requestId);
-
+      await api.serviceRequests.reject(requestId);
+      
       // Обновляем список заявок
-      const requestsData = await api.getServiceRequests();
-      setRequests(requestsData);
-
-    setSnackbar({
-      open: true,
-      message: 'Заявка отклонена',
-      severity: 'success'
-    });
-    } catch (err) {
-      console.error('Error rejecting request:', err);
+      const requestsData = await api.serviceRequests.getAll();
+      setRequests(requestsData || []);
+      
       setSnackbar({
         open: true,
-        message: err.message || 'Ошибка при отклонении заявки',
+        message: 'Заявка отклонена',
+        severity: 'info'
+      });
+    } catch (error) {
+      console.error('Error rejecting service request:', error);
+      setSnackbar({
+        open: true,
+        message: error.message || 'Ошибка при отклонении заявки',
         severity: 'error'
       });
-    } finally {
-      setLoading(false);
     }
   };
 
-  const groupedServices = services.reduce((acc, service) => {
-    const groupKey = service.category || 'Uncategorized'; 
-    if (!acc[groupKey]) {
-      acc[groupKey] = [];
+  const handleDeleteRequest = async (requestId) => {
+    try {
+      await api.serviceRequests.delete(requestId);
+      
+      // Обновляем список заявок
+      const requestsData = await api.serviceRequests.getAll();
+      setRequests(requestsData || []);
+      
+      setSnackbar({
+        open: true,
+        message: 'Заявка успешно удалена',
+        severity: 'success'
+      });
+    } catch (error) {
+      console.error('Error deleting service request:', error);
+      setSnackbar({
+        open: true,
+        message: error.message || 'Ошибка при удалении заявки',
+        severity: 'error'
+      });
     }
-    acc[groupKey].push(service);
-    return acc;
-  }, {});
+  };
+
+  const groupedServices = useMemo(() => {
+    console.log('Current services state:', services);
+    console.log('Services state type:', typeof services);
+    console.log('Is services array:', Array.isArray(services));
+    
+    if (!Array.isArray(services)) {
+      console.error('Services is not an array:', services);
+      return {};
+    }
+    
+    return services.reduce((acc, service) => {
+      if (!service) return acc;
+      // Если категория null или undefined, используем 'Образовательные программы'
+      const groupKey = service?.category || 'Образовательные программы';
+      if (!acc[groupKey]) {
+        acc[groupKey] = [];
+      }
+      acc[groupKey].push({
+        ...service,
+        category: service.category || 'Образовательные программы'
+      });
+      return acc;
+    }, {});
+  }, [services]);
 
   const directions = ['all', ...Object.keys(directionGroups)];
 
-  const renderTabs = () => {
-    return (
-      <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
-        <Tabs
-          value={selectedTab}
-          onChange={(e, newValue) => setSelectedTab(newValue)}
-          sx={{
-            '& .MuiTab-root': {
-              textTransform: 'none',
-              fontWeight: 600,
-              minHeight: 48
-            }
-          }}
-        >
-          <Tab label="Услуги" />
-          {canManageServiceRequests && <Tab label="Заявки" />}
-          {canManageServiceRequests && <Tab label="Одобренные заявки" />}
-        </Tabs>
-      </Box>
-    );
-  };
+  const renderTabs = () => null;
 
-  const renderRequests = (status) => (
+  const renderParentRequests = () => (
     <List>
-      {requests
-        .filter(r => r.status === status)
-        .map((request) => {
-          const service = services.find(s => s.service_id === request.service_id);
-          return (
+      {Array.isArray(requests) && requests.map((request) => (
+        <ListItem
+          key={request.request_id}
+          divider
+          secondaryAction={
+            <Box>
+              <Chip
+                label={
+                  request.status === 'pending' ? 'На рассмотрении' :
+                  request.status === 'approved' ? 'Одобрено' :
+                  'Отклонено'
+                }
+                color={
+                  request.status === 'pending' ? 'warning' :
+                  request.status === 'approved' ? 'success' :
+                  'error'
+                }
+                size="small"
+              />
+            </Box>
+          }
+        >
+          <ListItemText
+            primary={request.service_name}
+            secondary={
+              <>
+                <Typography component="span" variant="body2">
+                  Ребенок: {request.child_name}
+                </Typography>
+                {request.teacher_names && (
+                  <>
+                    <br />
+                    <Typography component="span" variant="body2">
+                      Воспитатели: {request.teacher_names}
+                    </Typography>
+                  </>
+                )}
+              </>
+            }
+          />
+        </ListItem>
+      ))}
+      {(!Array.isArray(requests) || requests.length === 0) && (
+        <ListItem>
+          <ListItemText primary="У вас пока нет заявок на услуги" />
+        </ListItem>
+      )}
+    </List>
+  );
+
+  const renderRequests = (status = 'pending') => (
+    <List>
+      {Array.isArray(requests) ? (
+        requests
+          .filter(request => request.status === status)
+          .map((request) => (
             <ListItem
               key={request.request_id}
-              sx={{ 
-                mb: 2,
-                bgcolor: 'background.paper',
-                borderRadius: 2,
-                boxShadow: 1
-              }}
-            >
-              <ListItemText
-                primary={
-                  <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                    {request.child_name} - {service?.service_name || 'Название услуги не найдено'}
-                  </Typography>
-                }
-                secondary={
-                  <Box sx={{ mt: 1 }}>
-                    <Typography variant="body2" color="text.secondary">
-                      Родитель: {request.parent_name}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      Дата заявки: {new Date(request.request_date).toLocaleDateString()}
-                    </Typography>
-                  </Box>
-                }
-              />
-              {status === 'pending' && (
-                <Box sx={{ display: 'flex', gap: 1 }}>
-                  <Tooltip title="Одобрить">
+              divider
+              secondaryAction={
+                <Box>
+                  {status === 'pending' && canManageServiceRequests ? (
+                    <>
+                      <Tooltip title="Одобрить">
+                        <IconButton
+                          edge="end"
+                          aria-label="approve"
+                          onClick={() => handleApproveRequest(request.request_id)}
+                          sx={{ color: 'success.main', mr: 1 }}
+                        >
+                          <CheckIcon />
+                        </IconButton>
+                      </Tooltip>
+                      <Tooltip title="Отклонить">
+                        <IconButton
+                          edge="end"
+                          aria-label="reject"
+                          onClick={() => handleRejectRequest(request.request_id)}
+                          sx={{ color: 'error.main', mr: 1 }}
+                        >
+                          <CloseIcon />
+                        </IconButton>
+                      </Tooltip>
+                    </>
+                  ) : status === 'approved' ? (
+                    <Tooltip title="Отклонить">
+                      <IconButton
+                        edge="end"
+                        aria-label="reject"
+                        onClick={() => handleRejectRequest(request.request_id)}
+                        sx={{ color: 'error.main', mr: 1 }}
+                      >
+                        <CloseIcon />
+                      </IconButton>
+                    </Tooltip>
+                  ) : status === 'rejected' ? (
+                    <Tooltip title="Одобрить">
+                      <IconButton
+                        edge="end"
+                        aria-label="approve"
+                        onClick={() => handleApproveRequest(request.request_id)}
+                        sx={{ color: 'success.main', mr: 1 }}
+                      >
+                        <CheckIcon />
+                      </IconButton>
+                    </Tooltip>
+                  ) : null}
+                  <Tooltip title="Удалить">
                     <IconButton
-                      onClick={(e) => { e.stopPropagation(); handleApproveRequest(request.request_id); }}
-                      color="success"
-                      size="small"
+                      edge="end"
+                      aria-label="delete"
+                      onClick={() => handleDeleteRequest(request.request_id)}
+                      sx={{ color: 'error.main' }}
                     >
-                      <CheckIcon />
-                    </IconButton>
-                  </Tooltip>
-                  <Tooltip title="Отклонить">
-                    <IconButton
-                      onClick={(e) => { e.stopPropagation(); handleRejectRequest(request.request_id); }}
-                      color="error"
-                      size="small"
-                    >
-                      <CloseIcon />
+                      <DeleteIcon />
                     </IconButton>
                   </Tooltip>
                 </Box>
-              )}
-              <Chip
-                label={
-                  status === 'pending' ? 'На рассмотрении' :
-                  status === 'approved' ? 'Одобрено' : 'Отклонено'
+              }
+            >
+              <ListItemText
+                primary={request.service_name}
+                secondary={
+                  <>
+                    <Typography component="span" variant="body2">
+                      Ребенок: {request.child_name}
+                    </Typography>
+                    <br />
+                    <Typography component="span" variant="body2">
+                      Родитель: {request.parent_name}
+                    </Typography>
+                    {request.teacher_names && (
+                      <>
+                        <br />
+                        <Typography component="span" variant="body2">
+                          Воспитатели: {request.teacher_names}
+                        </Typography>
+                      </>
+                    )}
+                  </>
                 }
-                color={
-                  status === 'pending' ? 'warning' :
-                  status === 'approved' ? 'success' : 'error'
-                }
-                size="small"
-                sx={{ ml: 2 }}
               />
             </ListItem>
-          );
-        })
-      }
+          ))
+      ) : (
+        <ListItem>
+          <ListItemText primary="Загрузка заявок..." />
+        </ListItem>
+      )}
+      {Array.isArray(requests) && requests.filter(request => request.status === status).length === 0 && (
+        <ListItem>
+          <ListItemText primary={`Нет ${
+            status === 'pending' ? 'новых' : 
+            status === 'approved' ? 'одобренных' : 
+            'отклоненных'
+          } заявок`} />
+        </ListItem>
+      )}
     </List>
   );
 
@@ -548,8 +807,14 @@ const Services = ({ canEdit, canManageRequests }) => {
                 <Tooltip title="Редактировать">
                   <IconButton
                     size="small"
-                    onClick={(e) => { e.stopPropagation(); handleEditService(service); }}
+                    onClick={(e) => { 
+                      e.stopPropagation(); 
+                      e.preventDefault();
+                      handleEditService(service); 
+                    }}
                     sx={{ ml: 0.5, p: 0.25 }}
+                    tabIndex={0}
+                    aria-label="Редактировать услугу"
                   >
                     <EditIcon sx={{ fontSize: '0.9rem' }} />
                   </IconButton>
@@ -629,29 +894,71 @@ const Services = ({ canEdit, canManageRequests }) => {
     );
   };
 
+  const handleTimeChange = (type) => (event) => {
+    const newTime = {
+      ...selectedTime,
+      [type]: event.target.value
+    };
+    setSelectedTime(newTime);
+    
+    const timeString = `${newTime.start}-${newTime.end}`;
+    setEditingService(prev => ({
+      ...prev,
+      time: timeString
+    }));
+  };
+
+  const handleDaysChange = (event) => {
+    const selectedDaysList = event.target.value;
+    setSelectedDays(selectedDaysList);
+    setEditingService(prev => ({
+      ...prev,
+      days_of_week: selectedDaysList.join(', ')
+    }));
+  };
+
+  const handleTeachersChange = (event) => {
+    const selectedTeachers = event.target.value;
+    setEditingService(prev => ({
+      ...prev,
+      teachers: selectedTeachers.join(', ')
+    }));
+  };
+
   const renderContent = () => {
     if (selectedTab === 0) {
       return (
         <>
           {renderDirectionTabs()}
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            {services
-              .filter(service => selectedDirection === 'all' || service.category === selectedDirection)
-              .map(service => renderServiceCard(service))}
+          <Grid container spacing={2}>
+            {Array.isArray(services) && services
+              .filter(service => selectedDirection === 'all' || service?.category === selectedDirection)
+              .map(service => service && renderServiceCard(service))}
           </Grid>
         </>
       );
     }
 
-    if (selectedTab === 1 && canManageServiceRequests) {
-      return (
-        <Box>
-          <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
-            Новые заявки
-          </Typography>
-          {renderRequests('pending')}
-        </Box>
-      );
+    if (selectedTab === 1) {
+      if (user.role === 'parent') {
+        return (
+          <Box>
+            <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+              Мои заявки на услуги
+            </Typography>
+            {renderParentRequests()}
+          </Box>
+        );
+      } else if (canManageServiceRequests) {
+        return (
+          <Box>
+            <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+              Новые заявки
+            </Typography>
+            {renderRequests('pending')}
+          </Box>
+        );
+      }
     }
 
     if (selectedTab === 2 && canManageServiceRequests) {
@@ -664,428 +971,497 @@ const Services = ({ canEdit, canManageRequests }) => {
         </Box>
       );
     }
+
+    if (selectedTab === 3 && canManageServiceRequests) {
+      return (
+        <Box>
+          <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>
+            Отклоненные заявки
+          </Typography>
+          {renderRequests('rejected')}
+        </Box>
+      );
+    }
   };
 
   return (
-    <Box sx={{ p: 3 }}>
+    <Box>
+      <Box sx={{ pl: 3, pt: 3 }}>
+        <PageTitle>Платные услуги</PageTitle>
+      </Box>
       <Box sx={{ 
         display: 'flex', 
-        justifyContent: 'space-between', 
-        alignItems: 'center',
-        mb: 3 
+        flexDirection: 'column',
+        p: 2
       }}>
-        <Typography
-          variant="h4"
-          sx={{
-            fontWeight: 700,
-            background: 'linear-gradient(135deg, #1E293B 0%, #334155 100%)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent'
+        <Box sx={{ 
+          borderBottom: 1, 
+          borderColor: 'divider',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center'
+        }}>
+          <Tabs
+            value={selectedTab}
+            onChange={(e, newValue) => setSelectedTab(newValue)}
+            sx={{
+              '& .MuiTab-root': {
+                textTransform: 'none',
+                fontWeight: 600,
+                minHeight: 48
+              }
+            }}
+          >
+            <Tab label="Услуги" />
+            {(canManageServiceRequests || user.role === 'parent') && (
+              <Tab label={user.role === 'parent' ? "Мои заявки" : "Новые заявки"} />
+            )}
+            {canManageServiceRequests && <Tab label="Одобренные заявки" />}
+            {canManageServiceRequests && <Tab label="Отклоненные заявки" />}
+          </Tabs>
+          {canEditServices && (
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={handleAddService}
+              sx={{
+                borderRadius: '8px',
+                fontSize: '0.9rem',
+                fontWeight: 600,
+                padding: '8px 16px',
+                height: '40px',
+                backgroundColor: 'primary.main',
+                textTransform: 'none',
+                boxShadow: 'none',
+                '&:hover': {
+                  backgroundColor: 'primary.dark',
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.15)'
+                }
+              }}
+            >
+              Добавить услугу
+            </Button>
+          )}
+        </Box>
+
+        {renderContent()}
+
+        <Dialog
+          open={openDialog}
+          onClose={() => setOpenDialog(false)}
+          maxWidth="sm"
+          fullWidth
+          PaperProps={{
+            sx: { borderRadius: '12px' }
           }}
         >
-          Платные услуги
-        </Typography>
-        {canEditServices && (
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={handleAddService}
-            sx={{ borderRadius: '8px' }}
-          >
-            Добавить услугу
-          </Button>
-        )}
-      </Box>
+          <DialogTitle sx={{ pb: 2 }}>
+            {editingService?.service_id ? 'Редактировать услугу' : 'Добавить услугу'}
+          </DialogTitle>
+          <DialogContent dividers>
+            <Box sx={{ pt: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <TextField
+                fullWidth
+                label="Название услуги"
+                value={editingService?.service_name || ''}
+                onChange={(e) => setEditingService({ ...editingService, service_name: e.target.value })}
+              />
+              
+              <TextField
+                fullWidth
+                label="Описание"
+                multiline
+                rows={3}
+                value={editingService?.description || ''}
+                onChange={(e) => setEditingService({ ...editingService, description: e.target.value })}
+              />
 
-      {renderTabs()}
-      {renderContent()}
+              <FormControl fullWidth>
+                <InputLabel>Категория</InputLabel>
+                <Select
+                  value={editingService?.category || ''}
+                  onChange={(e) => setEditingService({ ...editingService, category: e.target.value })}
+                >
+                  {Object.keys(directionGroups).map((category) => (
+                    <MenuItem key={category} value={category}>
+                      {category}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
 
-      <Dialog
-        open={openDialog}
-        onClose={() => setOpenDialog(false)}
-        maxWidth="sm"
-        fullWidth
-        PaperProps={{
-          sx: { borderRadius: '12px' }
-        }}
-      >
-        <DialogTitle sx={{ pb: 2 }}>
-          {editingService?.service_id ? 'Редактировать услугу' : 'Добавить услугу'}
-        </DialogTitle>
-        <DialogContent dividers>
-          <Box sx={{ pt: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <TextField
-              required
-              fullWidth
-              label="Название услуги"
-              value={editingService?.service_name || ''}
-              onChange={(e) => setEditingService({ ...editingService, service_name: e.target.value })}
-              error={!editingService?.service_name}
-              helperText={!editingService?.service_name ? 'Обязательное поле' : ''}
-            />
-            <TextField
-              required
-              fullWidth
-              label="Описание"
-              multiline
-              rows={3}
-              value={editingService?.description || ''}
-              onChange={(e) => setEditingService({ ...editingService, description: e.target.value })}
-              error={!editingService?.description}
-              helperText={!editingService?.description ? 'Обязательное поле' : ''}
-            />
-            <TextField
-              required
-              select
-              fullWidth
-              label="Категория"
-              value={editingService?.category || ''}
-              onChange={(e) => setEditingService({ ...editingService, category: e.target.value })}
-              error={!editingService?.category}
-              helperText={!editingService?.category ? 'Обязательное поле' : ''}
-            >
-              {Object.keys(directionGroups).map((category) => (
-                <MenuItem key={category} value={category}>
-                  {category}
-                </MenuItem>
-              ))}
-            </TextField>
-            <TextField
-              required
-              fullWidth
-              label="Стоимость за занятие"
-              type="number"
-              value={editingService?.price || ''}
-              onChange={(e) => {
-                const price = Number(e.target.value);
-                const lessonsMatch = editingService?.duration?.match(/\d+/);
-                const lessonsCount = lessonsMatch ? parseInt(lessonsMatch[0], 10) : 36;
-                setEditingService({
-                  ...editingService,
-                  price: e.target.value,
-                  total_price: (price * lessonsCount).toString()
-                });
-              }}
-              error={!editingService?.price}
-              helperText={!editingService?.price ? 'Обязательное поле' : ''}
-              InputProps={{
-                inputProps: { min: 0 }
-              }}
-            />
-            <TextField
-              required
-              fullWidth
-              label="Продолжительность курса (напр., 36 занятий)"
-              value={editingService?.duration || ''}
-              onChange={(e) => {
+              <TextField
+                fullWidth
+                label="Стоимость за занятие"
+                type="number"
+                value={editingService?.price || ''}
+                onChange={(e) => {
+                  const price = Number(e.target.value);
+                  const lessonsMatch = editingService?.duration?.match(/\d+/);
+                  const lessonsCount = lessonsMatch ? parseInt(lessonsMatch[0], 10) : 36;
+                  setEditingService({
+                    ...editingService,
+                    price: e.target.value,
+                    total_price: (price * lessonsCount).toString()
+                  });
+                }}
+                InputProps={{
+                  inputProps: { min: 0 }
+                }}
+              />
+
+              <TextField
+                fullWidth
+                label="Продолжительность курса"
+                value={editingService?.duration || ''}
+                onChange={(e) => {
                   const duration = e.target.value;
                   const price = Number(editingService?.price || 0);
                   const lessonsMatch = duration.match(/\d+/);
                   const lessonsCount = lessonsMatch ? parseInt(lessonsMatch[0], 10) : 0;
-                   setEditingService({ 
-                     ...editingService, 
-                     duration: duration,
-                     total_price: (price * lessonsCount).toString()
-                    });
+                  setEditingService({ 
+                    ...editingService, 
+                    duration: duration,
+                    total_price: (price * lessonsCount).toString()
+                  });
                 }}
-              error={!editingService?.duration}
-              helperText={!editingService?.duration ? 'Обязательное поле' : 'Например: 36 занятий'}
-            />
-             <TextField
-              disabled
-              fullWidth
-              label="Общая стоимость курса"
-              value={editingService?.total_price ? `${editingService.total_price} ₽` : '0 ₽'}
-              InputProps={{ readOnly: true }}
-            />
-            <TextField
-              required
-              fullWidth
-              label="Дни недели"
-              value={editingService?.days_of_week || ''}
-              onChange={(e) => setEditingService({ ...editingService, days_of_week: e.target.value })}
-              error={!editingService?.days_of_week}
-              helperText={!editingService?.days_of_week ? 'Обязательное поле' : 'Например: Понедельник, Среда, Пятница'}
-            />
-            <TextField
-              required
-              fullWidth
-              label="Время занятий"
-              value={editingService?.time || ''}
-              onChange={(e) => setEditingService({ ...editingService, time: e.target.value })}
-              error={!editingService?.time}
-              helperText={!editingService?.time ? 'Обязательное поле' : 'Например: 16:30-17:00'}
-            />
-            <TextField
-              required
-              fullWidth
-              label="Преподаватели"
-              multiline
-              rows={2}
-              value={editingService?.teachers || ''}
-              onChange={(e) => setEditingService({ ...editingService, teachers: e.target.value })}
-              error={!editingService?.teachers}
-              helperText={!editingService?.teachers ? 'Обязательное поле' : ''}
-            />
-          </Box>
-        </DialogContent>
-        <DialogActions sx={{ p: 2.5 }}>
-          <Button 
-            onClick={() => setOpenDialog(false)}
-            variant="outlined"
-            sx={{ borderRadius: '8px' }}
-          >
-            Отмена
-          </Button>
-          <Button 
-            variant="contained" 
-            onClick={() => handleSaveService(editingService)}
-            disabled={
-              !editingService?.service_name || 
-              !editingService?.description ||
-              !editingService?.category ||
-              !editingService?.price || editingService?.price <= 0 ||
-              !editingService?.duration ||
-              !editingService?.days_of_week ||
-              !editingService?.time ||
-              !editingService?.teachers
-            }
-            sx={{ borderRadius: '8px' }}
-          >
-            Сохранить
-          </Button>
-        </DialogActions>
-      </Dialog>
+                helperText="Например: 36 занятий"
+              />
 
-      <Dialog
-        open={serviceDetailsOpen}
-        onClose={() => setServiceDetailsOpen(false)}
-        maxWidth="md"
-        fullWidth
-        PaperProps={{
-          sx: { borderRadius: '16px' }
-        }}
-      >
-        {detailedService && (
-          <>
-            <DialogTitle sx={{ pb: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Typography variant="h5" sx={{ fontWeight: 700 }}>
-                  {detailedService.service_name}
-                </Typography>
-                <IconButton onClick={() => setServiceDetailsOpen(false)}>
-                  <CloseIcon />
-                </IconButton>
+              <TextField
+                disabled
+                fullWidth
+                label="Общая стоимость курса"
+                value={editingService?.total_price ? `${editingService.total_price} ₽` : '0 ₽'}
+                InputProps={{ readOnly: true }}
+              />
+
+              <FormControl fullWidth>
+                <InputLabel>Дни недели</InputLabel>
+                <Select
+                  multiple
+                  value={selectedDays}
+                  onChange={handleDaysChange}
+                  renderValue={(selected) => selected.join(', ')}
+                >
+                  {daysOfWeek.map((day) => (
+                    <MenuItem key={day} value={day}>
+                      <Checkbox checked={selectedDays.indexOf(day) > -1} />
+                      <ListItemText primary={day} />
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              <Box sx={{ display: 'flex', gap: 2 }}>
+                <TextField
+                  label="Время начала"
+                  type="time"
+                  value={selectedTime.start}
+                  onChange={handleTimeChange('start')}
+                  InputLabelProps={{ shrink: true }}
+                  inputProps={{ step: 300 }}
+                  sx={{ flex: 1 }}
+                />
+                <TextField
+                  label="Время окончания"
+                  type="time"
+                  value={selectedTime.end}
+                  onChange={handleTimeChange('end')}
+                  InputLabelProps={{ shrink: true }}
+                  inputProps={{ step: 300 }}
+                  sx={{ flex: 1 }}
+                />
               </Box>
-            </DialogTitle>
-            <DialogContent sx={{ pt: 3 }}>
-               <Grid container spacing={3}>
-                <Grid item xs={12} md={7}>
-                  <Typography variant="body1" paragraph sx={{ mb: 3 }}>
-                    {detailedService.description}
-                  </Typography>
-                  <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-                     <CategoryIcon color="action" />
-                     <Chip label={detailedService.category} size="small" />
-                  </Box>
-                   <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-                     <PersonIcon color="action" />
-                     <Typography variant="body2">{detailedService.teachers}</Typography>
-                  </Box>
-                  {canEditServices && (
-                    <Box sx={{ mt: 3, display: 'flex', gap: 2 }}>
-                      <Button
-                        variant="contained"
-                        startIcon={<EditIcon />}
-                        onClick={() => handleEditService(detailedService)}
-                        sx={{ 
-                          borderRadius: '8px',
-                          bgcolor: 'primary.main',
-                          color: 'white',
-                          '&:hover': {
-                            bgcolor: 'primary.dark',
-                          }
-                        }}
-                      >
-                        Редактировать
-                      </Button>
-                      <Button
-                        variant="contained"
-                        startIcon={<DeleteIcon />}
-                        onClick={() => handleDeleteService(detailedService.service_id)}
-                        sx={{ 
-                          borderRadius: '8px',
-                          bgcolor: 'error.main',
-                          color: 'white',
-                          '&:hover': {
-                            bgcolor: 'error.dark',
-                          }
-                        }}
-                      >
-                        Удалить
-                      </Button>
-                    </Box>
-                  )}
-                </Grid>
-                
-                <Grid item xs={12} md={5}>
-                  <Paper elevation={0} sx={{ p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
-                    <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>Детали</Typography>
-                    <Divider sx={{ mb: 2 }}/>
-                     <Box sx={{ mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <ScheduleIcon color="action" />
-                        <Typography variant="body2">{detailedService.days_of_week}</Typography>
-                     </Box>
-                     <Box sx={{ mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <AccessTimeIcon color="action" />
-                        <Typography variant="body2">{detailedService.time}</Typography>
-                     </Box>
-                     <Box sx={{ mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <AccessTimeIcon color="action" />
-                        <Typography variant="body2">{detailedService.duration}</Typography>
-                     </Box>
-                     <Divider sx={{ my: 2 }}/>
-                     <Box sx={{ mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <MoneyIcon color="action" />
-                        <Typography variant="body2">{detailedService.price} ₽ за занятие</Typography>
-                     </Box>
-                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <MoneyIcon color="action" />
-                        <Typography variant="body2" sx={{ fontWeight: 600 }}>{detailedService.total_price} ₽ за курс</Typography>
-                     </Box>
-                  </Paper>
-                </Grid>
-               </Grid>
-            </DialogContent>
-            <DialogActions sx={{ p: 2, borderTop: '1px solid', borderColor: 'divider' }}>
-              <Button 
-                onClick={() => setServiceDetailsOpen(false)}
-                variant="outlined"
-                sx={{ borderRadius: '8px' }}
-              >
-                Закрыть
-              </Button>
-              <Button 
-                variant="contained" 
-                startIcon={<SendIcon />}
-                onClick={() => handleOpenEnrollDialog(detailedService)}
-                sx={{ 
-                  borderRadius: '8px',
-                  bgcolor: 'success.main',
-                  color: 'white',
-                  '&:hover': {
-                    bgcolor: 'success.dark',
-                  }
-                }}
-              >
-                Записаться
-              </Button>
-            </DialogActions>
-          </>
-        )}
-      </Dialog>
 
-      <Dialog
-        open={enrollDialog}
-        onClose={() => setEnrollDialog(false)}
-        maxWidth="sm"
-        fullWidth
-        PaperProps={{
-          sx: {
-            borderRadius: '16px',
-            p: 2
-          }
-        }}
-      >
-        <DialogTitle sx={{ pb: 1 }}>
-           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Typography variant="h5" sx={{ fontWeight: 700 }}>
-                Запись на услугу
-              </Typography>
-              <IconButton onClick={() => setEnrollDialog(false)}>
-                  <CloseIcon />
-              </IconButton>
-           </Box>
-        </DialogTitle>
-        <DialogContent>
-          {selectedService && (
-            <Box sx={{ pt: 2 }}>
-              <Typography 
-                variant="h6" 
-                sx={{ 
-                  fontWeight: 600,
-                  color: 'primary.main',
-                  mb: 2 
-                }}
-              >
-                {selectedService.service_name}
-              </Typography>
-              
-              <Typography 
-                variant="body1" 
-                paragraph 
-                sx={{ 
-                  fontSize: '1rem',
-                  lineHeight: 1.6,
-                  color: 'text.primary',
-                  mb: 3
-                }}
-              >
-                {selectedService.description}
-              </Typography>
-
-              <Typography variant="body1" sx={{ mb: 2 }}>
-                Вы уверены, что хотите отправить заявку на запись на услугу "{selectedService.service_name}"?
-              </Typography>
-              <Paper elevation={0} sx={{ p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2, mb: 3 }}>
-                  <Box sx={{ mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <MoneyIcon color="action" />
-                      <Typography variant="body2">{selectedService.price} ₽ за занятие</Typography>
-                  </Box>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <MoneyIcon color="action" />
-                      <Typography variant="body2" sx={{ fontWeight: 600 }}>{selectedService.total_price} ₽ за курс</Typography>
-                  </Box>
-              </Paper>
-
+              <FormControl fullWidth>
+                <InputLabel>Преподаватели</InputLabel>
+                <Select
+                  multiple
+                  value={editingService?.teachers ? editingService.teachers.split(', ') : []}
+                  onChange={handleTeachersChange}
+                  renderValue={(selected) => selected.join(', ')}
+                >
+                  {teachersList.map((teacher) => (
+                    <MenuItem key={teacher.user_id} value={`${teacher.first_name} ${teacher.last_name}`}>
+                      <Checkbox checked={editingService?.teachers?.includes(`${teacher.first_name} ${teacher.last_name}`)} />
+                      <ListItemText primary={`${teacher.first_name} ${teacher.last_name}`} />
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
             </Box>
-          )}
-        </DialogContent>
-        <DialogActions sx={{ p: 2, pt: 1 }}>
-          <Button 
-            onClick={() => setEnrollDialog(false)}
-            sx={{ borderRadius: '8px' }}
-          >
-            Отмена
-          </Button>
-          <Button 
-            variant="contained" 
-            startIcon={<SendIcon />}
-            onClick={() => handleEnrollRequest(selectedService.service_id)}
-            sx={{ 
-              borderRadius: '8px',
-              px: 3
-            }}
-            disabled={loading}
-          >
-            {loading ? 'Отправка...' : 'Отправить заявку'}
-          </Button>
-        </DialogActions>
-      </Dialog>
+          </DialogContent>
+          <DialogActions sx={{ p: 2.5 }}>
+            <Button 
+              onClick={() => setOpenDialog(false)}
+              variant="outlined"
+              sx={{ borderRadius: '8px' }}
+            >
+              Отмена
+            </Button>
+            <Button 
+              variant="contained" 
+              onClick={() => handleSaveService(editingService)}
+              disabled={
+                !editingService?.service_name || 
+                !editingService?.description ||
+                !editingService?.category ||
+                !editingService?.price || editingService?.price <= 0 ||
+                !editingService?.duration ||
+                !editingService?.days_of_week ||
+                !editingService?.time ||
+                !editingService?.teachers
+              }
+              sx={{ borderRadius: '8px' }}
+            >
+              Сохранить
+            </Button>
+          </DialogActions>
+        </Dialog>
 
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={6000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
-      >
-        <Alert
-          onClose={() => setSnackbar({ ...snackbar, open: false })}
-          severity={snackbar.severity}
-          sx={{ width: '100%' }}
+        <Dialog
+          open={serviceDetailsOpen}
+          onClose={() => setServiceDetailsOpen(false)}
+          maxWidth="md"
+          fullWidth
+          PaperProps={{
+            sx: { borderRadius: '16px' }
+          }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+          {detailedService && (
+            <>
+              <DialogTitle sx={{ pb: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Typography variant="h5" sx={{ fontWeight: 700 }}>
+                    {detailedService.service_name}
+                  </Typography>
+                  <IconButton onClick={() => setServiceDetailsOpen(false)}>
+                    <CloseIcon />
+                  </IconButton>
+                </Box>
+              </DialogTitle>
+              <DialogContent sx={{ pt: 3 }}>
+                 <Grid container spacing={3}>
+                  <Grid item xs={12} md={7}>
+                    <Typography variant="body1" paragraph sx={{ mb: 3 }}>
+                      {detailedService.description}
+                    </Typography>
+                    <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+                       <CategoryIcon color="action" />
+                       <Chip label={detailedService.category} size="small" />
+                    </Box>
+                     <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+                       <PersonIcon color="action" />
+                       <Typography variant="body2">{detailedService.teachers}</Typography>
+                    </Box>
+                    {canEditServices && (
+                      <Box sx={{ mt: 3, display: 'flex', gap: 2 }}>
+                        <Button
+                          variant="contained"
+                          startIcon={<EditIcon />}
+                          onClick={() => handleEditService(detailedService)}
+                          sx={{ 
+                            borderRadius: '8px',
+                            bgcolor: 'primary.main',
+                            color: 'white',
+                            '&:hover': {
+                              bgcolor: 'primary.dark',
+                            }
+                          }}
+                        >
+                          Редактировать
+                        </Button>
+                        <Button
+                          variant="contained"
+                          startIcon={<DeleteIcon />}
+                          onClick={() => handleDeleteService(detailedService.service_id)}
+                          sx={{ 
+                            borderRadius: '8px',
+                            bgcolor: 'error.main',
+                            color: 'white',
+                            '&:hover': {
+                              bgcolor: 'error.dark',
+                            }
+                          }}
+                        >
+                          Удалить
+                        </Button>
+                      </Box>
+                    )}
+                  </Grid>
+                  
+                  <Grid item xs={12} md={5}>
+                    <Paper elevation={0} sx={{ p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+                      <Typography variant="h6" sx={{ mb: 2, fontWeight: 600 }}>Детали</Typography>
+                      <Divider sx={{ mb: 2 }}/>
+                       <Box sx={{ mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <ScheduleIcon color="action" />
+                          <Typography variant="body2">{detailedService.days_of_week}</Typography>
+                       </Box>
+                       <Box sx={{ mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <AccessTimeIcon color="action" />
+                          <Typography variant="body2">{detailedService.time}</Typography>
+                       </Box>
+                       <Box sx={{ mb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <AccessTimeIcon color="action" />
+                          <Typography variant="body2">{detailedService.duration}</Typography>
+                       </Box>
+                       <Divider sx={{ my: 2 }}/>
+                       <Box sx={{ mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <MoneyIcon color="action" />
+                          <Typography variant="body2">{detailedService.price} ₽ за занятие</Typography>
+                       </Box>
+                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <MoneyIcon color="action" />
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>{detailedService.total_price} ₽ за курс</Typography>
+                       </Box>
+                    </Paper>
+                  </Grid>
+                 </Grid>
+              </DialogContent>
+              <DialogActions sx={{ p: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+                <Button 
+                  onClick={() => setServiceDetailsOpen(false)}
+                  variant="outlined"
+                  sx={{ borderRadius: '8px' }}
+                >
+                  Закрыть
+                </Button>
+                <Button 
+                  variant="contained" 
+                  startIcon={<SendIcon />}
+                  onClick={() => handleOpenEnrollDialog(detailedService)}
+                  sx={{ 
+                    borderRadius: '8px',
+                    bgcolor: 'success.main',
+                    color: 'white',
+                    '&:hover': {
+                      bgcolor: 'success.dark',
+                    }
+                  }}
+                >
+                  Записаться
+                </Button>
+              </DialogActions>
+            </>
+          )}
+        </Dialog>
+
+        <Dialog
+          open={enrollDialog}
+          onClose={() => setEnrollDialog(false)}
+          maxWidth="sm"
+          fullWidth
+          PaperProps={{
+            sx: {
+              borderRadius: '16px',
+              p: 2
+            }
+          }}
+        >
+          <DialogTitle sx={{ pb: 1 }}>
+             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography variant="h5" sx={{ fontWeight: 700 }}>
+                  Запись на услугу
+                </Typography>
+                <IconButton onClick={() => setEnrollDialog(false)}>
+                    <CloseIcon />
+                </IconButton>
+             </Box>
+          </DialogTitle>
+          <DialogContent>
+            {selectedService && (
+              <Box sx={{ pt: 2 }}>
+                <Typography 
+                  variant="h6" 
+                  sx={{ 
+                    fontWeight: 600,
+                    color: 'primary.main',
+                    mb: 2 
+                  }}
+                >
+                  {selectedService.service_name}
+                </Typography>
+                
+                <Typography 
+                  variant="body1" 
+                  paragraph 
+                  sx={{ 
+                    fontSize: '1rem',
+                    lineHeight: 1.6,
+                    color: 'text.primary',
+                    mb: 3
+                  }}
+                >
+                  {selectedService.description}
+                </Typography>
+
+                <FormControl fullWidth sx={{ mb: 3 }}>
+                  <InputLabel>Выберите ребенка</InputLabel>
+                  <Select
+                    value={selectedChild || ''}
+                    onChange={(e) => {
+                      const childId = parseInt(String(e.target.value).trim());
+                      console.log('Selected child ID:', childId, typeof childId);
+                      setSelectedChild(childId);
+                    }}
+                    label="Выберите ребенка"
+                  >
+                    {children.map((child) => (
+                      <MenuItem key={child.child_id} value={child.child_id}>
+                        {child.name}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+
+                <Typography variant="body1" sx={{ mb: 2 }}>
+                  Вы уверены, что хотите отправить заявку на запись на услугу "{selectedService.service_name}"?
+                </Typography>
+
+                <Box sx={{ display: 'flex', gap: 2, justifyContent: 'flex-end', mt: 3 }}>
+                  <Button
+                    onClick={() => setEnrollDialog(false)}
+                    color="inherit"
+                  >
+                    Отмена
+                  </Button>
+                  <Button
+                    variant="contained"
+                    onClick={() => handleEnrollRequest(selectedService.service_id, selectedChild)}
+                    disabled={!selectedChild || loading || !children || children.length === 0}
+                    sx={{
+                      minWidth: '120px'
+                    }}
+                  >
+                    {loading ? (
+                      <>
+                        <CircularProgress size={20} sx={{ mr: 1 }} />
+                        Отправка...
+                      </>
+                    ) : 'Отправить'}
+                  </Button>
+                </Box>
+              </Box>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={6000}
+          onClose={() => setSnackbar({ ...snackbar, open: false })}
+        >
+          <Alert
+            onClose={() => setSnackbar({ ...snackbar, open: false })}
+            severity={snackbar.severity}
+            sx={{ width: '100%' }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>
+      </Box>
     </Box>
   );
 };

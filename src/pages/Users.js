@@ -25,7 +25,10 @@ import {
   FormHelperText,
   InputAdornment,
   CircularProgress,
-  styled
+  styled,
+  Tabs,
+  Tab,
+  Pagination
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -33,12 +36,14 @@ import {
   Delete as DeleteIcon,
   Person as PersonIcon,
   Email as EmailIcon,
+  Phone as PhoneIcon,
   VpnKey as KeyIcon,
   PhotoCamera as PhotoCameraIcon
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
 import { api } from '../api/api';
 import { ROLE_NAMES, ROLES } from '../constants/roles';
+import { getPhotoUrl } from '../utils/photoUtils';
 
 // Создаем собственный компонент VisuallyHiddenInput
 const VisuallyHiddenInput = styled('input')({
@@ -55,29 +60,44 @@ const VisuallyHiddenInput = styled('input')({
 
 const Users = () => {
   const [users, setUsers] = useState([]);
+  const [selectedTab, setSelectedTab] = useState('all');
   const [openDialog, setOpenDialog] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
   const [formData, setFormData] = useState({
-    name: '',
+    first_name: '',
+    last_name: '',
     email: '',
+    phone: '',
     role: '',
     password: '',
-    group: '',
-    childName: '',
     photoFile: null,
     photoUrl: ''
   });
   const [formErrors, setFormErrors] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [page, setPage] = useState(1);
+  const usersPerPage = 9;
 
   useEffect(() => {
     const fetchUsers = async () => {
       try {
         setLoading(true);
-        const data = await api.getUsers();
-        setUsers(data || []);
+        const response = await api.users.getAll();
+        console.log('Полученные пользователи:', response);
+
+        // Проверяем, что response.data существует и является массивом
+        const usersData = Array.isArray(response.data) ? response.data : [];
+        
+        // Логируем информацию о родителях и их детях
+        const parents = usersData.filter(user => user.role === 'parent');
+        console.log('Родители и их дети:', parents.map(parent => ({
+          parent: `${parent.first_name} ${parent.last_name}`,
+          children: parent.children
+        })));
+
+        setUsers(usersData);
         setError(null);
       } catch (err) {
         console.error('Error fetching users:', err);
@@ -95,24 +115,24 @@ const Users = () => {
     if (user) {
       setSelectedUser(user);
       setFormData({
-        name: user.name,
-        email: user.email,
-        role: user.role,
+        first_name: user.first_name || '',
+        last_name: user.last_name || '',
+        email: user.email || '',
+        phone: user.phone || '',
+        role: user.role || '',
         password: '',
-        group: user.group || '',
-        childName: user.childName || '',
         photoFile: null,
         photoUrl: user.photoUrl || ''
       });
     } else {
       setSelectedUser(null);
       setFormData({
-        name: '',
+        first_name: '',
+        last_name: '',
         email: '',
+        phone: '',
         role: '',
         password: '',
-        group: '',
-        childName: '',
         photoFile: null,
         photoUrl: ''
       });
@@ -129,13 +149,12 @@ const Users = () => {
 
   const validateForm = () => {
     const errors = {};
-    if (!formData.name.trim()) errors.name = 'Введите ФИО';
+    if (!formData.first_name.trim()) errors.first_name = 'Введите имя';
+    if (!formData.last_name.trim()) errors.last_name = 'Введите фамилию';
     if (!formData.email.trim()) errors.email = 'Введите email';
     else if (!/\S+@\S+\.\S+/.test(formData.email)) errors.email = 'Некорректный email';
     if (!formData.role) errors.role = 'Выберите роль';
     if (!selectedUser && !formData.password) errors.password = 'Введите пароль';
-    if (formData.role === 'teacher' && !formData.group) errors.group = 'Укажите группу';
-    if (formData.role === 'parent' && !formData.childName) errors.childName = 'Укажите имя ребенка';
     
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
@@ -146,21 +165,35 @@ const Users = () => {
 
     try {
       setLoading(true);
+      const userData = {
+        first_name: formData.first_name,
+        last_name: formData.last_name,
+        email: formData.email,
+        role: formData.role,
+        phone: formData.phone || null
+      };
+
+      let response;
       if (selectedUser) {
-        await api.updateUser(selectedUser.id, formData);
-        const updatedUsers = await api.getUsers();
-        setUsers(updatedUsers);
+        // Обновление существующего пользователя
+        response = await api.users.update(selectedUser.user_id, userData);
         showSnackbar('Пользователь обновлен', 'success');
       } else {
-        await api.createUser(formData);
-        const updatedUsers = await api.getUsers();
-        setUsers(updatedUsers);
+        // Создание нового пользователя
+        userData.password = formData.password;
+        response = await api.users.create(userData);
         showSnackbar('Пользователь добавлен', 'success');
       }
+
+      // Обновляем список пользователей
+      const updatedUsersResponse = await api.users.getAll();
+      const updatedUsers = Array.isArray(updatedUsersResponse.data) ? updatedUsersResponse.data : [];
+      setUsers(updatedUsers);
       handleCloseDialog();
     } catch (err) {
       console.error('Error saving user:', err);
-      showSnackbar(err.message || 'Ошибка при сохранении пользователя', 'error');
+      const errorMessage = err.response?.data?.message || err.message || 'Ошибка при сохранении пользователя';
+      showSnackbar(errorMessage, 'error');
     } finally {
       setLoading(false);
     }
@@ -169,8 +202,9 @@ const Users = () => {
   const handleDelete = async (id) => {
     try {
       setLoading(true);
-      await api.deleteUser(id);
-      const updatedUsers = await api.getUsers();
+      await api.users.delete(id);
+      const updatedUsersResponse = await api.users.getAll();
+      const updatedUsers = Array.isArray(updatedUsersResponse.data) ? updatedUsersResponse.data : [];
       setUsers(updatedUsers);
       showSnackbar('Пользователь удален', 'success');
     } catch (err) {
@@ -206,6 +240,27 @@ const Users = () => {
     }
   };
 
+  const handleTabChange = (event, newValue) => {
+    setSelectedTab(newValue);
+  };
+
+  const filterUsersByRole = (users, role) => {
+    if (!Array.isArray(users)) return [];
+    return role === 'all' ? users : users.filter(user => user.role === role);
+  };
+
+  const handlePageChange = (event, value) => {
+    setPage(value);
+  };
+
+  const getCurrentPageUsers = () => {
+    if (!Array.isArray(users)) return [];
+    const filteredUsers = filterUsersByRole(users, selectedTab);
+    const startIndex = (page - 1) * usersPerPage;
+    const endIndex = startIndex + usersPerPage;
+    return filteredUsers.slice(startIndex, endIndex);
+  };
+
   return (
     <Container maxWidth="lg">
       <Box sx={{ my: 4 }}>
@@ -231,66 +286,234 @@ const Users = () => {
             {error}
           </Alert>
         ) : (
-          <Grid container spacing={3}>
-            {users.map((user) => (
-              <Grid item xs={12} sm={6} md={4} key={user.id}>
-                <Card>
-                  <CardContent>
-                    <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                      <Avatar
-                        src={user.photoUrl}
-                        sx={{ width: 56, height: 56, mr: 2 }}
-                      >
-                        <PersonIcon />
-                      </Avatar>
-                      <Box sx={{ flex: 1 }}>
-                        <Typography variant="h6">
-                          {user.name}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
+          <>
+            <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
+              <Tabs 
+                value={selectedTab} 
+                onChange={handleTabChange}
+                variant="scrollable"
+                scrollButtons="auto"
+                sx={{
+                  '& .MuiTab-root': {
+                    minWidth: 'auto',
+                    px: 3
+                  }
+                }}
+              >
+                <Tab 
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <span>Все</span>
+                      <Chip 
+                        label={Array.isArray(users) ? users.length : 0} 
+                        size="small" 
+                        sx={{ bgcolor: 'rgba(0, 0, 0, 0.08)' }} 
+                      />
+                    </Box>
+                  } 
+                  value="all" 
+                />
+                <Tab 
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <span>{ROLE_NAMES.admin}</span>
+                      <Chip 
+                        label={Array.isArray(users) ? users.filter(u => u.role === 'admin').length : 0} 
+                        size="small"
+                        sx={{ bgcolor: `${getRoleColor('admin')}15`, color: getRoleColor('admin') }} 
+                      />
+                    </Box>
+                  } 
+                  value="admin" 
+                />
+                <Tab 
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <span>{ROLE_NAMES.psychologist}</span>
+                      <Chip 
+                        label={Array.isArray(users) ? users.filter(u => u.role === 'psychologist').length : 0} 
+                        size="small"
+                        sx={{ bgcolor: `${getRoleColor('psychologist')}15`, color: getRoleColor('psychologist') }} 
+                      />
+                    </Box>
+                  } 
+                  value="psychologist" 
+                />
+                <Tab 
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <span>{ROLE_NAMES.teacher}</span>
+                      <Chip 
+                        label={Array.isArray(users) ? users.filter(u => u.role === 'teacher').length : 0} 
+                        size="small"
+                        sx={{ bgcolor: `${getRoleColor('teacher')}15`, color: getRoleColor('teacher') }} 
+                      />
+                    </Box>
+                  } 
+                  value="teacher" 
+                />
+                <Tab 
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <span>{ROLE_NAMES.parent}</span>
+                      <Chip 
+                        label={Array.isArray(users) ? users.filter(u => u.role === 'parent').length : 0} 
+                        size="small"
+                        sx={{ bgcolor: `${getRoleColor('parent')}15`, color: getRoleColor('parent') }} 
+                      />
+                    </Box>
+                  } 
+                  value="parent" 
+                />
+              </Tabs>
+            </Box>
+
+            <Grid container spacing={3}>
+              {getCurrentPageUsers().map((user) => (
+                <Grid item xs={12} sm={6} md={4} key={user.user_id}>
+                  <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative', p: 2 }}>
+                    <CardContent sx={{ 
+                      flex: 1, 
+                      display: 'flex', 
+                      flexDirection: 'column',
+                      p: 0,
+                      '&:last-child': { pb: 0 }
+                    }}>
+                      {/* Верхняя часть с аватаром и основной информацией */}
+                      <Box sx={{ display: 'flex', alignItems: 'flex-start', mb: 2 }}>
+                        <Avatar
+                          src={user.photo_path ? getPhotoUrl(user.photo_path) : undefined}
+                          sx={{ 
+                            width: 56, 
+                            height: 56, 
+                            mr: 2,
+                            bgcolor: getRoleColor(user.role)
+                          }}
+                        >
+                          {!user.photo_path && `${user.first_name?.[0]}${user.last_name?.[0]}`}
+                        </Avatar>
+                        <Box sx={{ flex: 1 }}>
+                          <Typography variant="h6" sx={{ mb: 0.5 }}>
+                            {`${user.first_name} ${user.last_name}`}
+                          </Typography>
+                          <Chip
+                            label={ROLE_NAMES[user.role]}
+                            size="small"
+                            sx={{
+                              bgcolor: `${getRoleColor(user.role)}15`,
+                              color: getRoleColor(user.role),
+                              fontWeight: 500
+                            }}
+                          />
+                        </Box>
+                      </Box>
+
+                      {/* Контактная информация */}
+                      <Box sx={{ mb: 'auto' }}>
+                        <Typography 
+                          variant="body2" 
+                          sx={{ 
+                            display: 'flex', 
+                            alignItems: 'center',
+                            mb: 1,
+                            color: 'text.secondary'
+                          }}
+                        >
+                          <EmailIcon sx={{ fontSize: 18, mr: 1, color: 'action.active' }} />
                           {user.email}
                         </Typography>
+                        {user.phone && (
+                          <Typography 
+                            variant="body2" 
+                            sx={{ 
+                              display: 'flex', 
+                              alignItems: 'center',
+                              color: 'text.secondary'
+                            }}
+                          >
+                            <PhoneIcon sx={{ fontSize: 18, mr: 1, color: 'action.active' }} />
+                            {user.phone}
+                          </Typography>
+                        )}
                       </Box>
-                    </Box>
 
-                    <Box sx={{ mb: 2 }}>
-                      <Chip
-                        label={ROLE_NAMES[user.role]}
-                        sx={{
-                          bgcolor: `${getRoleColor(user.role)}15`,
-                          color: getRoleColor(user.role),
-                          fontWeight: 600
-                        }}
-                      />
-                      {user.group && (
-                        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                          Группа: {user.group}
-                        </Typography>
+                      {/* Информация о группах/детях */}
+                      {user.role === 'teacher' && Array.isArray(user.groups) && user.groups.length > 0 && (
+                        <Box sx={{ mt: 2, borderTop: 1, borderColor: 'divider', pt: 2 }}>
+                          <Typography 
+                            variant="body2" 
+                            sx={{ 
+                              color: 'text.secondary',
+                              display: 'flex',
+                              alignItems: 'flex-start',
+                              gap: 1
+                            }}
+                          >
+                            <strong>Группы:</strong>
+                            <span style={{ flex: 1 }}>{user.groups.join(', ')}</span>
+                          </Typography>
+                        </Box>
                       )}
-                      {user.childName && (
-                        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                          Ребенок: {user.childName}
-                        </Typography>
+                      {user.role === 'parent' && Array.isArray(user.children) && user.children.length > 0 && (
+                        <Box sx={{ mt: 2, borderTop: 1, borderColor: 'divider', pt: 2 }}>
+                          <Typography 
+                            variant="body2" 
+                            sx={{ 
+                              color: 'text.secondary',
+                              display: 'flex',
+                              alignItems: 'flex-start',
+                              gap: 1
+                            }}
+                          >
+                            <strong>Дети:</strong>
+                            <span style={{ flex: 1 }}>
+                              {user.children.join(', ')}
+                            </span>
+                          </Typography>
+                        </Box>
                       )}
-                    </Box>
 
-                    <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1 }}>
-                      <Tooltip title="Редактировать">
-                        <IconButton onClick={() => handleOpenDialog(user)}>
-                          <EditIcon />
-                        </IconButton>
-                      </Tooltip>
-                      <Tooltip title="Удалить">
-                        <IconButton onClick={() => handleDelete(user.id)} color="error">
-                          <DeleteIcon />
-                        </IconButton>
-                      </Tooltip>
-                    </Box>
-                  </CardContent>
-                </Card>
-              </Grid>
-            ))}
-          </Grid>
+                      {/* Кнопки управления */}
+                      <Box sx={{ 
+                        display: 'flex', 
+                        justifyContent: 'flex-end', 
+                        gap: 1,
+                        mt: 2
+                      }}>
+                        <Tooltip title="Редактировать">
+                          <IconButton 
+                            onClick={() => handleOpenDialog(user)}
+                            size="small"
+                            sx={{ color: 'action.active' }}
+                          >
+                            <EditIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Удалить">
+                          <IconButton 
+                            onClick={() => handleDelete(user.user_id)} 
+                            size="small"
+                            sx={{ color: 'error.main' }}
+                          >
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                      </Box>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              ))}
+            </Grid>
+            <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
+              <Pagination
+                count={Math.ceil(filterUsersByRole(users, selectedTab).length / usersPerPage)}
+                page={page}
+                onChange={handlePageChange}
+                color="primary"
+                size="large"
+              />
+            </Box>
+          </>
         )}
 
         <Dialog
@@ -321,21 +544,24 @@ const Users = () => {
                     </Button>
                   </Box>
                 </Grid>
-                <Grid item xs={12}>
+                <Grid item xs={6}>
                   <TextField
                     fullWidth
-                    label="ФИО"
-                    value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    error={!!formErrors.name}
-                    helperText={formErrors.name}
-                    InputProps={{
-                      startAdornment: (
-                        <InputAdornment position="start">
-                          <PersonIcon color="action" />
-                        </InputAdornment>
-                      ),
-                    }}
+                    label="Имя"
+                    value={formData.first_name}
+                    onChange={(e) => setFormData({ ...formData, first_name: e.target.value })}
+                    error={!!formErrors.first_name}
+                    helperText={formErrors.first_name}
+                  />
+                </Grid>
+                <Grid item xs={6}>
+                  <TextField
+                    fullWidth
+                    label="Фамилия"
+                    value={formData.last_name}
+                    onChange={(e) => setFormData({ ...formData, last_name: e.target.value })}
+                    error={!!formErrors.last_name}
+                    helperText={formErrors.last_name}
                   />
                 </Grid>
                 <Grid item xs={12}>
@@ -357,6 +583,21 @@ const Users = () => {
                   />
                 </Grid>
                 <Grid item xs={12}>
+                  <TextField
+                    fullWidth
+                    label="Телефон"
+                    value={formData.phone}
+                    onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                    InputProps={{
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <PhoneIcon color="action" />
+                        </InputAdornment>
+                      ),
+                    }}
+                  />
+                </Grid>
+                <Grid item xs={12}>
                   <FormControl fullWidth error={!!formErrors.role}>
                     <InputLabel>Роль</InputLabel>
                     <Select
@@ -372,32 +613,6 @@ const Users = () => {
                     {formErrors.role && <FormHelperText>{formErrors.role}</FormHelperText>}
                   </FormControl>
                 </Grid>
-
-                {formData.role === 'teacher' && (
-                  <Grid item xs={12}>
-                    <TextField
-                      fullWidth
-                      label="Группа"
-                      value={formData.group}
-                      onChange={(e) => setFormData({ ...formData, group: e.target.value })}
-                      error={!!formErrors.group}
-                      helperText={formErrors.group}
-                    />
-                  </Grid>
-                )}
-
-                {formData.role === 'parent' && (
-                  <Grid item xs={12}>
-                    <TextField
-                      fullWidth
-                      label="ФИО ребенка"
-                      value={formData.childName}
-                      onChange={(e) => setFormData({ ...formData, childName: e.target.value })}
-                      error={!!formErrors.childName}
-                      helperText={formErrors.childName}
-                    />
-                  </Grid>
-                )}
 
                 {!selectedUser && (
                   <Grid item xs={12}>

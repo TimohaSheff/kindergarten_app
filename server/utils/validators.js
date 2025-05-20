@@ -1,24 +1,42 @@
-/**
- * Проверяет, является ли строка корректной датой в формате YYYY-MM-DD
- * @param {string} dateString - Строка с датой для проверки
- * @returns {boolean} - true если дата корректна, false если нет
- */
-const validateDate = (dateString) => {
-    // Проверяем, что дата соответствует формату ISO8601 (YYYY-MM-DD)
-    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!dateRegex.test(dateString)) {
-        return false;
-    }
+const validateDate = (date) => {
+  if (!date) return false;
+  const d = new Date(date);
+  return d instanceof Date && !isNaN(d);
+};
 
-    // Проверяем, что дата действительна
-    const date = new Date(dateString);
-    if (isNaN(date.getTime())) {
-        return false;
-    }
+const validateTime = (time) => {
+  if (!time) return false;
+  const timeRegex = /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/;
+  return timeRegex.test(time);
+};
 
-    return true;
+const validateAttendance = (data) => {
+  const errors = {};
+
+  if (!data.child_id) {
+    errors.child_id = 'ID ребенка обязателен';
+  }
+
+  if (!validateDate(data.date)) {
+    errors.date = 'Некорректная дата';
+  }
+
+  if (data.arrival_time && !validateTime(data.arrival_time)) {
+    errors.arrival_time = 'Некорректное время прибытия';
+  }
+
+  if (data.departure_time && !validateTime(data.departure_time)) {
+    errors.departure_time = 'Некорректное время ухода';
+  }
+
+  return {
+    isValid: Object.keys(errors).length === 0,
+    errors
+  };
 };
 
 module.exports = {
-    validateDate
+  validateDate,
+  validateTime,
+  validateAttendance
 }; 

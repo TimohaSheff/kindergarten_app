@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   Box,
   Typography,
@@ -14,13 +14,15 @@ import {
 import {
   Group as GroupIcon,
   Schedule as ScheduleIcon,
-  AssignmentTurnedIn as ProgressIcon,
+  Assessment as ProgressIcon,
   LocalActivity as ServicesIcon,
-  Comment as RecommendationsIcon,
+  Description as RecommendationsIcon,
   Contacts as ContactsIcon,
   Home as HomeIcon,
-  AttachMoney as FinanceIcon,
-  RestaurantMenu as MenuIcon
+  Restaurant as MenuIcon,
+  Person as PersonIcon,
+  People as UsersIcon,
+  EventNote as AttendanceIcon
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -76,19 +78,14 @@ const Welcome = () => {
   const theme = useTheme();
   const navigate = useNavigate();
   const { user, isAuthenticated, loading } = useAuth();
-
-  console.log('Welcome component - Initial render:', {
-    user,
-    isAuthenticated,
-    loading
-  });
+  const initialCheckDone = useRef(false);
 
   useEffect(() => {
-    if (!loading) {
+    if (!loading && !initialCheckDone.current) {
       if (!isAuthenticated) {
-        console.log('Not authenticated, redirecting to login');
-        navigate('/login');
+        navigate('/login', { replace: true });
       }
+      initialCheckDone.current = true;
     }
   }, [loading, isAuthenticated, navigate]);
 
@@ -104,93 +101,76 @@ const Welcome = () => {
     return null;
   }
 
-  console.log('Welcome component - User data:', {
-    user,
-    role: user.role
-  });
-
-  const menuItems = [
+  const cards = [
     {
       title: 'Главная',
-      description: 'Обзор основных функций и возможностей системы',
+      description: 'Вернуться на главную страницу',
       icon: HomeIcon,
-      path: '/welcome',
+      path: '/',
       roles: ['admin', 'teacher', 'parent', 'psychologist'],
-      color: '#1E88E5'
+      color: theme.palette.primary.main
     },
     {
       title: 'Группы',
-      description: 'Управление группами детского сада',
+      description: 'Управление группами и детьми',
       icon: GroupIcon,
       path: '/groups',
-      roles: ['admin', 'teacher', 'psychologist'],
-      color: '#43A047'
+      roles: ['admin', 'psychologist'],
+      color: theme.palette.info.main
     },
     {
       title: 'Расписание',
-      description: 'Просмотр и управление расписанием занятий',
+      description: 'Расписание занятий',
       icon: ScheduleIcon,
       path: '/schedule',
       roles: ['admin', 'teacher', 'parent'],
-      color: '#FB8C00'
+      color: theme.palette.warning.main
+    },
+    {
+      title: 'Посещаемость',
+      description: 'Учет посещаемости',
+      icon: AttendanceIcon,
+      path: '/attendance',
+      roles: ['admin', 'teacher'],
+      color: theme.palette.error.main
     },
     {
       title: 'Прогресс',
-      description: 'Отслеживание прогресса развития детей',
+      description: 'Отслеживание прогресса детей',
       icon: ProgressIcon,
       path: '/progress',
       roles: ['admin', 'teacher', 'parent', 'psychologist'],
-      color: '#E53935'
-    },
-    {
-      title: 'Услуги',
-      description: 'Управление дополнительными услугами',
-      icon: ServicesIcon,
-      path: '/services',
-      roles: ['admin', 'teacher', 'parent'],
-      color: '#8E24AA'
-    },
-    {
-      title: 'Финансы',
-      description: 'Управление финансовыми операциями',
-      icon: FinanceIcon,
-      path: '/finance',
-      roles: ['admin', 'teacher', 'parent'],
-      color: '#00ACC1'
+      color: theme.palette.success.main
     },
     {
       title: 'Рекомендации',
-      description: 'Рекомендации по развитию детей',
+      description: 'Рекомендации по развитию и воспитанию',
       icon: RecommendationsIcon,
       path: '/recommendations',
       roles: ['admin', 'teacher', 'parent', 'psychologist'],
-      color: '#3949AB'
+      color: theme.palette.info.main
     },
     {
       title: 'Меню',
-      description: 'Управление меню питания',
+      description: 'Меню питания на неделю',
       icon: MenuIcon,
       path: '/menu',
-      roles: ['admin', 'teacher', 'parent', 'psychologist'],
-      color: '#00897B'
+      roles: ['admin', 'teacher', 'parent'],
+      color: theme.palette.warning.main
     },
     {
-      title: 'Контакты',
-      description: 'Контактная информация',
-      icon: ContactsIcon,
-      path: '/contacts',
-      roles: ['admin', 'teacher', 'parent', 'psychologist'],
-      color: '#5D4037'
+      title: 'Услуги',
+      description: 'Дополнительные услуги',
+      icon: ServicesIcon,
+      path: '/services',
+      roles: ['admin', 'parent'],
+      color: theme.palette.secondary.main
     }
   ];
 
-  const filteredItems = menuItems.filter(item => {
-    const hasAccess = Array.isArray(item.roles) && item.roles.includes(user.role);
-    console.log(`Menu item ${item.title}: hasAccess=${hasAccess}, user.role=${user.role}`);
-    return hasAccess;
-  });
-
-  console.log('Filtered menu items:', filteredItems);
+  const filteredItems = cards.filter(item => 
+    Array.isArray(item.roles) && item.roles.includes(user.role)
+  );
 
   return (
     <Box

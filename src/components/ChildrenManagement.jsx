@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
     Box,
     Button,
@@ -22,13 +22,23 @@ import {
     Snackbar,
     Alert,
     ListItem,
-    ListItemAvatar
+    ListItemAvatar,
+    CircularProgress
 } from '@mui/material';
-import { Edit as EditIcon, Delete as DeleteIcon, Person as PersonIcon, PhotoCamera as PhotoCameraIcon } from '@mui/icons-material';
+import { Edit as EditIcon, Delete as DeleteIcon, Person as PersonIcon, PhotoCamera as PhotoCameraIcon, Refresh as RefreshIcon, Add as AddIcon } from '@mui/icons-material';
 import axios from '../utils/axios';
 import { useAuth } from '../contexts/AuthContext';
 import { styled } from '@mui/material/styles';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams, useOutletContext } from 'react-router-dom';
+import ChildForm from './ChildForm';
+import ChildrenList from './ChildrenList';
+import { getPhotoUrl, processPhoto, handlePastedImage } from '../utils/photoUtils';
+import { childrenApi } from '../api/api';
+import { API_CONFIG } from '../config';
+import { useSnackbar } from '../hooks/useSnackbar';
+import { useDialog } from '../hooks/useDialog';
+import { formatDate, getAge } from '../utils/date';
+import { logger } from '../utils/logger';
 
 const StyledCard = styled(Card)(({ theme }) => ({
     height: '100%',
@@ -74,345 +84,362 @@ const StyledChip = styled(Chip)(({ theme }) => ({
     }
 }));
 
-const BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3002/api';
-
-const getPhotoUrl = (photoPath) => {
-    if (!photoPath) return null;
-    if (photoPath.startsWith('data:')) return photoPath;
-    
-    // Добавляем логирование для отладки
-    const fullUrl = `${BASE_URL}/${photoPath}`;
-    console.log('Constructing photo URL:', {
-        photoPath,
-        baseUrl: BASE_URL,
-        fullUrl
-    });
-    return fullUrl;
-};
+const BASE_URL = process.env.REACT_APP_API_URL?.split('/api')[0] || 'http://localhost:3001';
 
 const ChildrenManagement = ({ canEdit = false, viewMode = 'full', userRole }) => {
-    const { user } = useAuth();
+    const { user, isAuthenticated, loading } = useAuth();
     const location = useLocation();
     const navigate = useNavigate();
+    const [searchParams] = useSearchParams();
+    const { showSnackbar } = useSnackbar();
+    const { isOpen: openDialog, data: selectedChild, openDialog: handleOpenDialog, closeDialog: handleCloseDialog } = useDialog();
+    const isMounted = useRef(true);
+    const initialFetchDone = useRef(false);
+    const fetchInProgress = useRef(false);
+    const groupId = searchParams.get('groupId');
+    
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState(null);
+    
     const [children, setChildren] = useState([]);
     const [filteredChildren, setFilteredChildren] = useState([]);
     const [currentGroup, setCurrentGroup] = useState(null);
     const [groups, setGroups] = useState([]);
     const [parents, setParents] = useState([]);
     const [services, setServices] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState(null);
-    const [openDialog, setOpenDialog] = useState(false);
-    const [selectedChild, setSelectedChild] = useState(null);
     const [photoPreview, setPhotoPreview] = useState(null);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [childToDelete, setChildToDelete] = useState(null);
-    const [snackbar, setSnackbar] = useState({
-        open: false,
-        message: '',
-        severity: 'success'
-    });
+    const [childrenCount, setChildrenCount] = useState(0);
+    const [filteredChildrenCount, setFilteredChildrenCount] = useState(0);
+    const [selectedChildId, setSelectedChildId] = useState(null);
 
     const [formData, setFormData] = useState({
         name: '',
         date_of_birth: '',
         parent_id: '',
-        group_id: '',
+        group_id: groupId || '',
         allergies: '',
         services: [],
         photo: null,
         photo_mime_type: null
     });
 
-    const [imageLoadError, setImageLoadError] = useState(false);
+    const { PageTitle } = useOutletContext();
 
     useEffect(() => {
+        console.log('Основной useEffect запущен:', {
+            groupId,
+            userRole,
+            isAuthenticated,
+            currentMountState: isMounted.current
+        });
+
+        if (!isAuthenticated) {
+            console.log('Пользователь не аутентифицирован');
+            return;
+        }
+
+        let isEffectActive = true;
+        isMounted.current = true;
+
         const fetchData = async () => {
+            if (fetchInProgress.current) {
+                console.log('Загрузка уже выполняется, пропускаем');
+                return;
+            }
+
             try {
-                setLoading(true);
-                const searchParams = new URLSearchParams(location.search);
-                const groupId = searchParams.get('groupId');
-
-                await Promise.all([
-                    fetchChildren(),
-                    fetchGroups(),
-                    fetchParents(),
-                    fetchServices()
-                ]);
-
-                if (groupId) {
-                    const group = groups.find(g => (g.group_id || g.id) === Number(groupId));
-                    setCurrentGroup(group);
+                fetchInProgress.current = true;
+                setIsLoading(true);
+                setError(null);
+                
+                const token = localStorage.getItem('token');
+                if (!token) {
+                    throw new Error('Отсутствует токен авторизации');
                 }
 
-                setError(null);
-            } catch (err) {
-                console.error('Error fetching data:', err);
-                setError(err.message || 'Ошибка при загрузке данных');
+                console.log('Начало загрузки данных...');
+                const [childrenData, groupData] = await Promise.all([
+                    fetchChildren(),
+                    groupId ? fetchCurrentGroup() : Promise.resolve(null)
+                ]);
+                
+                if (!isEffectActive) {
+                    console.log('Эффект больше не активен, прерываем обновление');
+                    return;
+                }
+
+                console.log('Данные получены:', {
+                    hasChildrenData: !!childrenData,
+                    childrenCount: childrenData?.length,
+                    hasGroupData: !!groupData,
+                    isEffectActive
+                });
+
+                if (childrenData && Array.isArray(childrenData)) {
+                    console.log('Данные успешно загружены:', {
+                        childrenCount: childrenData.length,
+                        groupData,
+                        firstChild: childrenData[0]
+                    });
+                }
+                
+                initialFetchDone.current = true;
+                
+            } catch (error) {
+                console.error('Ошибка в fetchData:', error);
+                if (isMounted.current && error.message !== 'Request canceled' && error.message !== 'Request debounced') {
+                    const errorMessage = error.message || 'Ошибка при загрузке данных';
+                    setError(errorMessage);
+                    showSnackbar({
+                        message: errorMessage,
+                        severity: 'error'
+                    });
+
+                    if (error.response?.status === 401) {
+                        navigate('/login');
+                    }
+                }
             } finally {
-                setLoading(false);
+                if (isEffectActive) {
+                    setIsLoading(false);
+                    fetchInProgress.current = false;
+                    console.log('Загрузка завершена, состояния:', {
+                        isLoading: false,
+                        fetchInProgress: false,
+                        childrenCount: children?.length,
+                        filteredChildrenCount: filteredChildren?.length
+                    });
+                }
             }
         };
 
         fetchData();
-    }, [location.search]);
+
+        return () => {
+            console.log('Очистка эффекта');
+            isEffectActive = false;
+            isMounted.current = false;
+            fetchInProgress.current = false;
+        };
+    }, [groupId, isAuthenticated]);
 
     useEffect(() => {
-        const searchParams = new URLSearchParams(location.search);
-        const groupId = searchParams.get('groupId');
-
-        if (groupId && children.length > 0) {
-            const filtered = children.filter(child => 
-                (child.group_id || child.id) === Number(groupId)
-            );
-            setFilteredChildren(filtered);
-        } else {
+        if (userRole === 'parent' && children.length > 0) {
+            // Для родителя всегда показываем всех его детей
             setFilteredChildren(children);
+            
+            // Если есть дети, получаем информацию о группе первого ребенка
+            const firstChild = children[0];
+            if (firstChild.group_id) {
+                fetchCurrentGroup(firstChild.group_id);
+            }
         }
-    }, [children, location.search]);
+    }, [children, userRole]);
 
-    const fetchServices = async () => {
-        try {
-            const response = await axios.get('/services');
-            setServices(response.data);
-        } catch (error) {
-            console.error('Ошибка при загрузке услуг:', error);
-        }
+    const getPhotoUrlFunc = (path) => {
+        if (!path) return null;
+        
+        // Убираем лишние 'uploads/photos' из пути
+        const cleanPath = path.replace(/^uploads\/photos\//, '');
+        
+        // Формируем полный URL
+        return `${process.env.REACT_APP_API_URL}/uploads/photos/${cleanPath}`;
     };
 
     const fetchChildren = async () => {
         try {
-            const response = await axios.get('/children');
-            const processedChildren = response.data.map(child => ({
-                ...child,
-                services: Array.isArray(child.services) 
-                    ? child.services.map(Number).filter(n => !isNaN(n))
-                    : typeof child.services === 'string'
-                        ? child.services.replace(/[{}\s]/g, '').split(',').filter(Boolean).map(Number)
-                        : [],
-                allergies: child.allergies || ''
-            }));
-            console.log('Обработанные данные детей:', processedChildren);
-            setChildren(processedChildren);
+            console.log('Начало загрузки детей:', {
+                groupId,
+                userRole: user.role,
+                userId: user.id || user.user_id,
+                user
+            });
+
+            let response;
+            if (user.role === 'parent') {
+                // Для родителя получаем только его детей
+                response = await childrenApi.getAll({ parent_id: user.id || user.user_id });
+            } else {
+                // Для остальных ролей получаем детей с учетом группы
+                response = await childrenApi.getAll({ group_id: groupId });
+            }
+
+            console.log('Ответ от сервера:', response);
+
+            if (!response || !response.data) {
+                throw new Error('Нет данных в ответе сервера');
+            }
+
+            // Группируем детей по их ID и объединяем данные воспитателей
+            const childrenMap = new Map();
+            
+            Array.isArray(response.data) && response.data.forEach(child => {
+                const childId = child.id || child.child_id;
+                
+                if (childrenMap.has(childId)) {
+                    // Если ребенок уже есть в Map, добавляем информацию о втором воспитателе
+                    const existingChild = childrenMap.get(childId);
+                    if (child.teacher && (!existingChild.teachers || !existingChild.teachers.some(t => t.id === child.teacher.id))) {
+                        existingChild.teachers = existingChild.teachers || [];
+                        existingChild.teachers.push(child.teacher);
+                    }
+                } else {
+                    // Если ребенка еще нет, создаем новую запись
+                    const newChild = {
+                        ...child,
+                        teachers: child.teacher ? [child.teacher] : []
+                    };
+                    delete newChild.teacher; // Удаляем старое поле teacher
+                    childrenMap.set(childId, newChild);
+                }
+            });
+
+            const childrenData = Array.from(childrenMap.values());
+            console.log('Данные детей после обработки:', childrenData);
+
+            setChildren(childrenData);
+            setFilteredChildren(childrenData);
+            setChildrenCount(childrenData.length);
+            setFilteredChildrenCount(childrenData.length);
+            setError(null);
+
+            return childrenData;
+        } catch (err) {
+            console.error('Ошибка при загрузке детей:', err);
+            setError('Ошибка при получении списка детей');
+            setChildren([]);
+            setFilteredChildren([]);
+            setChildrenCount(0);
+            setFilteredChildrenCount(0);
+            throw err;
+        }
+    };
+
+    const fetchCurrentGroup = async (groupIdToFetch = groupId) => {
+        if (!groupIdToFetch || !isMounted.current) return null;
+        
+        try {
+            console.log(`Запрос данных о группе ${groupIdToFetch}...`);
+            
+            const response = await axios.get('/groups');
+            console.log('Получен список групп:', response.data);
+            
+            const groupData = response.data.find(group => 
+                group.id === parseInt(groupIdToFetch) || 
+                group.group_id === parseInt(groupIdToFetch)
+            );
+            
+            if (!groupData) {
+                throw new Error(`Группа с ID ${groupIdToFetch} не найдена`);
+            }
+            
+            console.log(`Получен ответ для группы ${groupIdToFetch}:`, groupData);
+            
+            const normalizedGroupData = {
+                id: groupData.group_id || groupData.id,
+                group_id: groupData.group_id || groupData.id,
+                name: groupData.group_name || groupData.name,
+                group_name: groupData.group_name || groupData.name,
+                age_range: groupData.age_range,
+                teacher_id: groupData.teacher_id,
+                children_count: groupData.children_count
+            };
+            
+            console.log('Нормализованные данные группы:', normalizedGroupData);
+            
+            if (isMounted.current) {
+                setCurrentGroup(normalizedGroupData);
+            }
+            
+            return normalizedGroupData;
         } catch (error) {
-            console.error('Ошибка при загрузке детей:', error);
-            setSnackbar({
-                open: true,
-                message: 'Ошибка при загрузке списка детей',
+            console.error(`Ошибка при загрузке информации о группе ${groupIdToFetch}:`, error);
+            
+            if (error.response?.status === 404) {
+                showSnackbar({
+                    message: `Группа с ID ${groupIdToFetch} не найдена`,
+                    severity: 'warning'
+                });
+            } else {
+                showSnackbar({
+                    message: error.message || 'Ошибка при загрузке информации о группе',
+                    severity: 'error'
+                });
+            }
+            throw error;
+        }
+    };
+
+    const fetchParents = async () => {
+        if (user.role === 'parent') return;
+        
+        try {
+            const response = await axios.getParents();
+            setParents(Array.isArray(response) ? response : []);
+        } catch (error) {
+            console.error('Ошибка при загрузке родителей:', error);
+            showSnackbar({
+                message: error.message || 'Ошибка при загрузке списка родителей',
                 severity: 'error'
             });
         }
     };
 
-    const fetchGroups = async () => {
-        try {
-            const response = await axios.get('/groups');
-            if (response.data && Array.isArray(response.data)) {
-                const validGroups = response.data.filter(
-                    group => group && (group.group_id || group.id) && (group.group_name || group.name)
-                );
-                setGroups(validGroups);
-            } else {
-                console.error('Неверный формат данных групп:', response.data);
-                setGroups([]);
-            }
-        } catch (error) {
-            console.error('Ошибка при загрузке групп:', error);
-            if (error.response) {
-                console.error('Ответ сервера:', error.response.data);
-            }
-            setGroups([]);
-        }
-    };
-
-    const fetchParents = async () => {
-        try {
-            const response = await axios.get('/users?role=parent');
-            setParents(response.data);
-        } catch (error) {
-            console.error('Ошибка при загрузке родителей:', error);
-        }
-    };
-
-    const convertToBase64 = (file) => {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.readAsDataURL(file);
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = (error) => reject(error);
-        });
-    };
-
-    const handlePhotoChange = async (e) => {
+    const handlePhotoUpload = async (e) => {
         const file = e.target.files[0];
         if (file) {
             try {
-                // Проверяем размер файла (максимум 5MB)
-                if (file.size > 5 * 1024 * 1024) {
-                    setSnackbar({
-                        open: true,
-                        message: 'Размер файла не должен превышать 5MB',
-                        severity: 'error'
-                    });
-                    return;
-                }
-
-                // Проверяем тип файла
-                const validTypes = ['image/jpeg', 'image/png', 'image/webp'];
-                if (!validTypes.includes(file.type)) {
-                    setSnackbar({
-                        open: true,
-                        message: 'Поддерживаются только форматы JPEG, PNG и WEBP',
-                        severity: 'error'
-                    });
-                    return;
-                }
-
-                // Конвертируем файл в base64
-                const base64Data = await convertToBase64(file);
-                console.log('Фото сконвертировано в base64');
-
-                // Обновляем состояние формы
+                const { base64Data, previewUrl, mimeType } = await processPhoto(file);
                 setFormData(prev => ({
                     ...prev,
-                    photo: base64Data
+                    photo: base64Data,
+                    photo_mime_type: mimeType
                 }));
-
-                // Создаем URL для превью
-                const previewUrl = URL.createObjectURL(file);
                 setPhotoPreview(previewUrl);
                 
-                setSnackbar({
-                    open: true,
+                showSnackbar({
                     message: 'Фото успешно загружено',
                     severity: 'success'
                 });
             } catch (error) {
-                console.error('Ошибка при обработке фото:', error);
-                setSnackbar({
-                    open: true,
-                    message: 'Ошибка при обработке фотографии',
+                showSnackbar({
+                    message: error.message,
                     severity: 'error'
                 });
             }
         }
     };
 
-    const handlePaste = (e) => {
-        const items = (e.clipboardData || e.originalEvent.clipboardData).items;
-        for (let item of items) {
-            if (item.type.indexOf('image') === 0) {
-                const blob = item.getAsFile();
-                
-                // Проверяем размер файла
-                if (blob.size > 5 * 1024 * 1024) {
-                    setSnackbar({
-                        open: true,
-                        message: 'Размер файла не должен превышать 5MB',
-                        severity: 'error'
-                    });
-                    return;
-                }
-
-                // Проверяем тип файла
-                const validTypes = ['image/jpeg', 'image/png', 'image/webp'];
-                if (!validTypes.includes(blob.type)) {
-                    setSnackbar({
-                        open: true,
-                        message: 'Поддерживаются только форматы JPEG, PNG и WEBP',
-                        severity: 'error'
-                    });
-                    return;
-                }
-
-                const reader = new FileReader();
-                reader.onloadend = () => {
-                    setPhotoPreview(reader.result);
-                    setFormData(prev => ({
-                        ...prev,
-                        photo: reader.result
-                    }));
-                };
-                reader.readAsDataURL(blob);
-                break;
+    const handlePaste = async (e) => {
+        try {
+            const result = await handlePastedImage(e);
+            if (result) {
+                const { base64Data, previewUrl, mimeType } = result;
+                setFormData(prev => ({
+                    ...prev,
+                    photo: base64Data,
+                    photo_mime_type: mimeType
+                }));
+                setPhotoPreview(previewUrl);
             }
+        } catch (error) {
+            showSnackbar({
+                message: error.message,
+                severity: 'error'
+            });
         }
-    };
-
-    const handleOpenDialog = (child = null) => {
-        if (child) {
-            const birthDate = child.date_of_birth ? new Date(child.date_of_birth).toISOString().split('T')[0] : '';
-            console.log('Редактируемый ребенок:', child);
-            
-            const groupId = child.group_id || child.id;
-            const group = groups.find(g => g.id === groupId || g.group_id === groupId);
-            
-            setSelectedChild({
-                ...child,
-                id: child.child_id || child.id
-            });
-            
-            setFormData({
-                name: child.name,
-                date_of_birth: birthDate,
-                parent_id: child.parent_id,
-                group_id: group ? groupId : '',
-                allergies: Array.isArray(child.allergies) ? child.allergies.join(',') : child.allergies || '',
-                services: Array.isArray(child.services) ? child.services.map(Number) : [],
-                photo: null
-            });
-            
-            // Устанавливаем превью фото с правильным URL
-            if (child.photo_path) {
-                const photoUrl = `${BASE_URL}/${child.photo_path}`;
-                console.log('Setting photo preview URL:', photoUrl);
-                setPhotoPreview(photoUrl);
-                setImageLoadError(false);
-            } else {
-                setPhotoPreview(null);
-            }
-        } else {
-            setSelectedChild(null);
-            setFormData({
-                name: '',
-                date_of_birth: '',
-                parent_id: '',
-                group_id: '',
-                allergies: '',
-                services: [],
-                photo: null
-            });
-            setPhotoPreview(null);
-            setImageLoadError(false);
-        }
-        setOpenDialog(true);
-    };
-
-    const handleCloseDialog = () => {
-        setOpenDialog(false);
-        setSelectedChild(null);
     };
 
     const handleChange = (e) => {
         const { name, value } = e.target;
-        console.log('Изменение поля:', name, 'Значение:', value, 'Тип:', typeof value);
-        
         let processedValue = value;
+        
         if (name === 'services') {
-            console.log('Обработка services, исходное значение:', value);
-            // Всегда преобразуем в массив чисел
             processedValue = Array.isArray(value) 
-                ? value.map(v => Number(v))
-                : typeof value === 'string'
-                    ? [Number(value)]
-                    : [];
-            
-            // Фильтруем невалидные значения
-            processedValue = processedValue.filter(v => !isNaN(v) && v !== 0);
-            console.log('Обработанное значение services:', processedValue);
-        } else if (name === 'allergies') {
-            // Обработка поля allergies
-            processedValue = value || '';
+                ? value.map(v => Number(v)).filter(v => !isNaN(v) && v !== 0)
+                : [];
         }
         
         setFormData(prev => ({
@@ -421,96 +448,60 @@ const ChildrenManagement = ({ canEdit = false, viewMode = 'full', userRole }) =>
         }));
     };
 
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        console.log('Отправляемые данные:', {
-            ...formData,
-            photo: formData.photo ? 'base64_data_present' : null
-        });
-
+    const handleSubmit = async () => {
         try {
-            // Форматируем аллергии
-            let formattedAllergies = null;
-            if (formData.allergies) {
-                if (typeof formData.allergies === 'string') {
-                    formattedAllergies = formData.allergies.trim().toLowerCase() === 'нет' || 
-                                       formData.allergies.trim() === '' 
-                                       ? 'Аллергий нет' 
-                                       : formData.allergies.split(',').map(a => a.trim()).filter(Boolean);
-                } else if (Array.isArray(formData.allergies)) {
-                    formattedAllergies = formData.allergies;
-                }
-            } else {
-                formattedAllergies = 'Аллергий нет';
-            }
+            setIsLoading(true);
+            setError(null);
 
-            // Форматируем сервисы
-            const formattedServices = formData.services && formData.services.length > 0 
-                ? Array.isArray(formData.services) 
-                    ? formData.services.map(Number).filter(n => !isNaN(n))
-                    : [Number(formData.services)].filter(n => !isNaN(n))
+            // Преобразуем сервисы в массив чисел
+            const services = Array.isArray(formData.services) 
+                ? formData.services.map(Number).filter(id => !isNaN(id) && id > 0)
                 : [];
 
-            const dataToSend = {
-                name: formData.name.trim(),
+            // Преобразуем аллергии в формат PostgreSQL array
+            const allergiesArray = formData.allergies 
+                ? `{${formData.allergies.split(',').map(a => a.trim()).filter(Boolean).map(a => `"${a}"`).join(',')}}`
+                : '{}';
+
+            const [firstName, ...lastNameParts] = formData.name.split(' ');
+            const lastName = lastNameParts.join(' ');
+
+            const childData = {
+                name: formData.name, // Оставляем полное имя
+                first_name: firstName || '',
+                last_name: lastName || '',
                 date_of_birth: formData.date_of_birth,
                 parent_id: Number(formData.parent_id),
                 group_id: Number(formData.group_id),
-                allergies: formattedAllergies,
-                services: formattedServices
+                allergies: allergiesArray,
+                services: services // Отправляем как массив чисел
             };
 
-            // Добавляем фото только если оно было изменено
-            if (formData.photo) {
-                if (formData.photo.startsWith('data:')) {
-                    dataToSend.photo = formData.photo.split(',')[1];
-                } else {
-                    dataToSend.photo = formData.photo;
-                }
-            }
-
-            console.log('Отправка данных на сервер:', {
-                ...dataToSend,
-                photo: dataToSend.photo ? 'base64_data_present' : null
+            console.log('Отправляемые данные:', {
+                originalFormData: formData,
+                processedData: childData,
+                selectedChild: selectedChild
             });
 
-            let response;
-            if (selectedChild && selectedChild.id) {
-                response = await axios.put(`/children/${selectedChild.id}`, dataToSend);
-                console.log('Ответ сервера при обновлении:', response.data);
-                setSnackbar({
-                    open: true,
-                    message: 'Данные ребенка успешно обновлены',
-                    severity: 'success'
-                });
+            if (selectedChild) {
+                await childrenApi.update(selectedChild.id, childData);
+                showSnackbar({ message: 'Данные ребенка успешно обновлены', severity: 'success' });
             } else {
-                response = await axios.post('/children', dataToSend);
-                console.log('Ответ сервера при создании:', response.data);
-                setSnackbar({
-                    open: true,
-                    message: 'Ребенок успешно добавлен',
-                    severity: 'success'
-                });
+                await childrenApi.create(childData);
+                showSnackbar({ message: 'Ребенок успешно добавлен', severity: 'success' });
             }
 
             handleCloseDialog();
             await fetchChildren();
         } catch (error) {
             console.error('Ошибка при сохранении данных:', error);
-            if (error.response?.data) {
-                console.error('Детали ошибки:', error.response.data);
-            }
-            
-            const errorMessage = error.response?.data?.message || 
-                               error.response?.data?.error || 
-                               error.message || 
-                               'Неизвестная ошибка';
-                               
-            setSnackbar({
-                open: true,
-                message: `Ошибка при ${selectedChild ? 'обновлении' : 'создании'} записи: ${errorMessage}`,
+            setError(error.message || 'Произошла ошибка при сохранении данных');
+            showSnackbar({
+                message: error.message || 'Произошла ошибка при сохранении данных',
                 severity: 'error'
             });
+        } finally {
+            setIsLoading(false);
         }
     };
 
@@ -521,281 +512,228 @@ const ChildrenManagement = ({ canEdit = false, viewMode = 'full', userRole }) =>
 
     const handleConfirmDelete = async () => {
         try {
-            setLoading(true);
-            // Сначала пробуем удалить все рекомендации для этого ребенка
-            try {
-                await axios.delete(`/recommendations/child/${childToDelete}`);
-            } catch (error) {
-                console.warn('Ошибка при удалении рекомендаций:', error);
-                // Продолжаем выполнение даже если рекомендации не удалось удалить
-            }
+            setIsLoading(true);
+            console.log('Удаление ребенка:', childToDelete);
             
-            // Затем удаляем самого ребенка
-            const response = await axios.delete(`/children/${childToDelete}`);
+            const result = await childrenApi.delete(childToDelete);
+            console.log('Результат удаления:', result);
             
-            if (response.status === 200) {
-                await fetchChildren();
-                setSnackbar({
-                    open: true,
-                    message: 'Ребенок успешно удален',
-                    severity: 'success'
-                });
-                setDeleteDialogOpen(false);
-                setChildToDelete(null);
-            } else {
-                throw new Error('Не удалось удалить ребенка');
-            }
+            // Обновляем оба списка: общий и отфильтрованный
+            setChildren(prevChildren => 
+                prevChildren.filter(child => String(child.id) !== String(childToDelete))
+            );
+            setFilteredChildren(prevChildren => 
+                prevChildren.filter(child => String(child.id) !== String(childToDelete))
+            );
+            
+            showSnackbar({
+                message: result.message || 'Ребенок успешно удален',
+                severity: 'success'
+            });
+            
+            setDeleteDialogOpen(false);
+            setChildToDelete(null);
         } catch (error) {
             console.error('Ошибка при удалении ребенка:', error);
-            setSnackbar({
-                open: true,
-                message: error.response?.data?.message || 'Ошибка при удалении ребенка',
+            showSnackbar({
+                message: error.message || 'Ошибка при удалении ребенка',
                 severity: 'error'
             });
         } finally {
-            setLoading(false);
+            setIsLoading(false);
         }
     };
 
-    const handleCancelDelete = () => {
-        setDeleteDialogOpen(false);
-        setChildToDelete(null);
+    const handleEdit = async (child) => {
+        try {
+            console.log('Открываем форму редактирования для ребенка:', child);
+
+            // Загружаем необходимые данные, если их еще нет
+            const loadData = async () => {
+                try {
+                    console.log('Начало загрузки данных для формы редактирования');
+                    
+                    const [parentsResponse, groupsResponse, servicesResponse] = await Promise.all([
+                        axios.get('/users', { 
+                            params: { role: 'parent' } 
+                        }),
+                        axios.get('/groups'),
+                        axios.get('/services')
+                    ]);
+
+                    console.log('Получены сырые ответы:', {
+                        parents: parentsResponse?.data,
+                        groups: groupsResponse?.data,
+                        services: servicesResponse?.data
+                    });
+
+                    // Фильтруем родителей из общего списка пользователей
+                    const parentsData = Array.isArray(parentsResponse?.data) 
+                        ? parentsResponse.data
+                            .filter(user => user.role === 'parent')
+                            .map(parent => ({
+                                id: String(parent.id || parent.user_id),
+                                name: parent.name || `${parent.first_name} ${parent.last_name}`.trim(),
+                                role: parent.role
+                            }))
+                        : [];
+
+                    // Обрабатываем группы
+                    const groupsData = Array.isArray(groupsResponse?.data) 
+                        ? groupsResponse.data.map(group => ({
+                            id: String(group.id || group.group_id),
+                            name: group.name || group.group_name,
+                            age_range: group.age_range
+                        }))
+                        : [];
+
+                    // Обрабатываем услуги
+                    const servicesData = Array.isArray(servicesResponse?.data)
+                        ? servicesResponse.data.map(service => ({
+                            id: String(service.id || service.service_id),
+                            name: service.name || service.service_name,
+                            description: service.description
+                        }))
+                        : [];
+
+                    console.log('Обработанные данные:', {
+                        parents: parentsData,
+                        groups: groupsData,
+                        services: servicesData
+                    });
+
+                    // Обновляем состояния только если есть данные
+                    setParents(parentsData);
+                    setGroups(groupsData);
+                    setServices(servicesData);
+
+                } catch (error) {
+                    console.error('Ошибка при загрузке данных:', error);
+                    showSnackbar({
+                        message: 'Ошибка при загрузке списков данных',
+                        severity: 'warning'
+                    });
+                }
+            };
+
+            // Всегда загружаем свежие данные при открытии формы
+            await loadData();
+
+            // Форматируем дату из ISO в YYYY-MM-DD
+            const formattedDate = child.date_of_birth ? 
+                child.date_of_birth.split('T')[0] : '';
+
+            // Форматируем аллергии
+            const allergies = Array.isArray(child.allergies) ? 
+                child.allergies.join(', ') : 
+                (typeof child.allergies === 'string' ? child.allergies : '');
+
+            // Форматируем услуги
+            const childServices = Array.isArray(child.services) ?
+                child.services.map(s => String(s.id || s)).filter(Boolean) :
+                [];
+
+            const formDataToSet = {
+                name: child.name || '',
+                date_of_birth: formattedDate,
+                parent_id: String(child.parent_id || ''),
+                group_id: String(child.group_id || groupId || ''),
+                allergies: allergies,
+                services: childServices,
+                photo: null,
+                photo_mime_type: null,
+                photo_path: child.photo_path || null
+            };
+
+            console.log('Подготовленные данные для формы:', formDataToSet);
+            setFormData(formDataToSet);
+            handleOpenDialog(child);
+            
+        } catch (error) {
+            console.error('Ошибка при открытии формы редактирования:', error);
+            showSnackbar({
+                message: 'Ошибка при открытии формы редактирования',
+                severity: 'error'
+            });
+        }
     };
 
-    // Модифицируем отображение данных в зависимости от роли и режима просмотра
-    const renderChildrenList = () => {
+    if (loading || isLoading) {
         return (
-            <Grid container spacing={3}>
-                {currentGroup && (
-                    <Grid item xs={12}>
-                        <Box sx={{ mb: 3, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <Typography variant="h5" component="h2">
-                                Группа: {currentGroup.group_name}
-                            </Typography>
-                            <Button
-                                variant="outlined"
-                                onClick={() => navigate('/groups')}
-                                sx={{
-                                    borderRadius: '12px',
-                                    textTransform: 'none'
-                                }}
-                            >
-                                Вернуться к списку групп
-                            </Button>
-                        </Box>
-                    </Grid>
-                )}
-                {filteredChildren.map((child) => (
-                    <Grid item xs={12} sm={6} md={4} key={child.child_id || child.id}>
-                        <StyledCard>
-                            <CardContent sx={{ p: 2.5 }}>
-                                <Box sx={{ 
-                                    display: 'flex', 
-                                    flexDirection: 'column', 
-                                    alignItems: 'center',
-                                    mb: 2 
-                                }}>
-                                    <StyledAvatar
-                                        src={child.photo_path ? getPhotoUrl(child.photo_path) : null}
-                                        onError={(e) => {
-                                            console.error('Ошибка загрузки изображения для:', {
-                                                childId: child.child_id || child.id,
-                                                photoPath: child.photo_path,
-                                                fullUrl: child.photo_path ? getPhotoUrl(child.photo_path) : null,
-                                                error: e
-                                            });
-                                            // Сбрасываем src и показываем иконку по умолчанию
-                                            e.target.src = null;
-                                            e.target.onError = null;
-                                        }}
-                                    >
-                                        <PersonIcon />
-                                    </StyledAvatar>
-                                    <Typography 
-                                        variant="h6" 
-                                        sx={{ 
-                                            fontWeight: 600,
-                                            fontSize: '1.1rem',
-                                            color: '#1a1a1a',
-                                            mt: 1
-                                        }}
-                                    >
-                                        {child.name}
-                                    </Typography>
-                                </Box>
-
-                                <Box sx={{ mb: 1.5 }}>
-                                    <Typography 
-                                        variant="body2" 
-                                        sx={{ 
-                                            color: 'text.secondary',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: 0.5,
-                                            mb: 0.5,
-                                            fontSize: '0.875rem'
-                                        }}
-                                    >
-                                        Дата рождения: {new Date(child.date_of_birth).toLocaleDateString('ru-RU')}
-                                    </Typography>
-
-                                    <Typography 
-                                        variant="body2" 
-                                        sx={{ 
-                                            color: 'text.secondary',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: 0.5,
-                                            mb: 0.5,
-                                            fontSize: '0.875rem'
-                                        }}
-                                    >
-                                        Группа: {groups.find(g => g.group_id === child.group_id)?.group_name || 'Не указана'}
-                                    </Typography>
-
-                                    <Typography 
-                                        variant="body2" 
-                                        sx={{ 
-                                            color: 'text.secondary',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: 0.5,
-                                            mb: 0.5,
-                                            fontSize: '0.875rem'
-                                        }}
-                                    >
-                                        Родитель: {child.parent_first_name && child.parent_last_name 
-                                            ? `${child.parent_first_name} ${child.parent_last_name}`
-                                            : parents.find(p => p.user_id === child.parent_id)?.name || 'Не указан'
-                                        }
-                                    </Typography>
-
-                                    {child.parent_email && (
-                                        <Typography 
-                                            variant="body2" 
-                                            sx={{ 
-                                                color: 'text.secondary',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: 0.5,
-                                                fontSize: '0.875rem'
-                                            }}
-                                        >
-                                            Email: {child.parent_email}
-                                        </Typography>
-                                    )}
-                                </Box>
-
-                                {/* Аллергии */}
-                                {child.allergies && child.allergies.length > 0 && (
-                                    <Box sx={{ mb: 1.5 }}>
-                                        <Typography 
-                                            variant="subtitle2" 
-                                            sx={{ 
-                                                color: '#1a1a1a',
-                                                fontSize: '0.875rem',
-                                                fontWeight: 600,
-                                                mb: 0.5 
-                                            }}
-                                        >
-                                            Аллергии:
-                                        </Typography>
-                                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                                            {Array.isArray(child.allergies) 
-                                                ? child.allergies.map((allergy, index) => (
-                                                    <StyledChip
-                                                        key={index}
-                                                        label={allergy}
-                                                        size="small"
-                                                        className="error"
-                                                    />
-                                                ))
-                                                : child.allergies.split(',').map((allergy, index) => (
-                                                    <StyledChip
-                                                        key={index}
-                                                        label={allergy.trim()}
-                                                        size="small"
-                                                        className="error"
-                                                    />
-                                                ))
-                                            }
-                                        </Box>
-                                    </Box>
-                                )}
-
-                                {/* Услуги */}
-                                {child.services && child.services.length > 0 && (
-                                    <Box sx={{ mb: 1 }}>
-                                        <Typography 
-                                            variant="subtitle2" 
-                                            sx={{ 
-                                                color: '#1a1a1a',
-                                                fontSize: '0.875rem',
-                                                fontWeight: 600,
-                                                mb: 0.5 
-                                            }}
-                                        >
-                                            Дополнительные услуги:
-                                        </Typography>
-                                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                                            {child.services.map((serviceId) => {
-                                                const service = services.find(s => s.service_id === serviceId);
-                                                return (
-                                                    <StyledChip
-                                                        key={serviceId}
-                                                        label={service ? service.service_name : `Услуга ${serviceId}`}
-                                                        size="small"
-                                                        className="primary"
-                                                    />
-                                                );
-                                            })}
-                                        </Box>
-                                    </Box>
-                                )}
-                            </CardContent>
-
-                            {canEdit && (
-                                <CardActions sx={{ 
-                                    justifyContent: 'flex-end', 
-                                    p: 1.5,
-                                    mt: 'auto',
-                                    borderTop: '1px solid rgba(0, 0, 0, 0.05)'
-                                }}>
-                                    <IconButton
-                                        size="small"
-                                        onClick={() => handleOpenDialog(child)}
-                                        sx={{
-                                            color: 'primary.main',
-                                            '&:hover': {
-                                                backgroundColor: 'rgba(25, 118, 210, 0.08)'
-                                            }
-                                        }}
-                                    >
-                                        <EditIcon fontSize="small" />
-                                    </IconButton>
-                                    <IconButton
-                                        size="small"
-                                        onClick={() => handleDelete(child.child_id || child.id)}
-                                        sx={{
-                                            color: 'error.main',
-                                            '&:hover': {
-                                                backgroundColor: 'rgba(211, 47, 47, 0.08)'
-                                            }
-                                        }}
-                                    >
-                                        <DeleteIcon fontSize="small" />
-                                    </IconButton>
-                                </CardActions>
-                            )}
-                        </StyledCard>
-                    </Grid>
-                ))}
-            </Grid>
+            <Box 
+                display="flex" 
+                flexDirection="column" 
+                justifyContent="center" 
+                alignItems="center" 
+                minHeight="80vh" 
+                gap={3}
+                sx={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                    zIndex: 1000
+                }}
+            >
+                <CircularProgress size={60} thickness={4} />
+                <Typography variant="h6" color="text.secondary">
+                    Загрузка данных...
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                    {groupId 
+                        ? `Загружаем список детей для группы ${groupId}...` 
+                        : 'Загружаем список всех детей...'}
+                </Typography>
+            </Box>
         );
-    };
+    }
+
+    if (error) {
+        return (
+            <Box display="flex" flexDirection="column" justifyContent="center" alignItems="center" minHeight="80vh" gap={3} p={3}>
+                <Alert severity="error" sx={{ maxWidth: 600, width: '100%' }}>
+                    <Typography variant="subtitle1" fontWeight={600} gutterBottom>
+                        Ошибка при загрузке данных
+                    </Typography>
+                    <Typography variant="body2">{error}</Typography>
+                </Alert>
+                <Button 
+                    variant="contained" 
+                    onClick={() => {
+                        setIsLoading(true);
+                        setError(null);
+                        Promise.all([
+                            fetchCurrentGroup(),
+                            fetchChildren()
+                        ]).finally(() => {
+                            if (isMounted.current) {
+                                setIsLoading(false);
+                            }
+                        });
+                    }}
+                    startIcon={<RefreshIcon />}
+                >
+                    Повторить загрузку
+                </Button>
+            </Box>
+        );
+    }
+
+    console.log('Рендеринг списка детей:', {
+        childrenCount: children?.length,
+        filteredChildrenCount: filteredChildren?.length,
+        isLoading,
+        error,
+        currentGroup
+    });
 
     return (
-        <>
+        <Box>
+            <Box sx={{ pl: 3, pt: 3 }}>
+                <PageTitle>Мои Дети</PageTitle>
+            </Box>
             {!['admin', 'teacher', 'psychologist', 'parent'].includes(userRole) ? (
                 <Box sx={{ p: 3 }}>
                     <Alert severity="error">
@@ -806,241 +744,89 @@ const ChildrenManagement = ({ canEdit = false, viewMode = 'full', userRole }) =>
                 <Box sx={{ p: 3 }}>
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
                         <Typography variant="h4" component="h1">
-                            Список детей
+                            {userRole === 'parent' ? 'Мои дети' : (currentGroup ? `Группа: ${currentGroup.name || 'Неизвестная группа'}` : '')}
                         </Typography>
-                        {canEdit && (
+                        {userRole !== 'parent' && (
                             <Button
                                 variant="contained"
                                 color="primary"
-                                onClick={() => handleOpenDialog(null)}
+                                onClick={() => {
+                                    setFormData({
+                                        name: '',
+                                        date_of_birth: '',
+                                        parent_id: '',
+                                        group_id: groupId || '',
+                                        allergies: '',
+                                        services: [],
+                                        photo: null,
+                                        photo_mime_type: null
+                                    });
+                                    handleOpenDialog(null);
+                                }}
+                                startIcon={<AddIcon />}
                             >
                                 Добавить ребенка
                             </Button>
                         )}
                     </Box>
-
-                    {renderChildrenList()}
-
-                    <Dialog open={openDialog} onClose={handleCloseDialog} maxWidth="sm" fullWidth>
-                        <DialogTitle>
-                            {selectedChild ? 'Редактировать ребенка' : 'Добавить ребенка'}
-                        </DialogTitle>
-                        <form onSubmit={handleSubmit} onPaste={handlePaste}>
-                            <DialogContent>
-                                <Box display="flex" flexDirection="column" gap={2}>
-                                    <Box display="flex" flexDirection="column" alignItems="center" gap={2}>
-                                        {photoPreview && (
-                                            <Box sx={{ mt: 2, textAlign: 'center' }}>
-                                                <img
-                                                    src={photoPreview}
-                                                    alt="Предпросмотр"
-                                                    style={{
-                                                        maxWidth: '200px',
-                                                        maxHeight: '200px',
-                                                        objectFit: 'contain',
-                                                        borderRadius: '8px'
-                                                    }}
-                                                    onError={(e) => {
-                                                        console.error('Ошибка загрузки превью');
-                                                        setPhotoPreview(null);
-                                                    }}
-                                                />
-                                            </Box>
-                                        )}
-                                        <Button
-                                            variant="outlined"
-                                            component="label"
-                                            startIcon={<PhotoCameraIcon />}
-                                            sx={{
-                                                mb: 2,
-                                                borderRadius: '8px',
-                                                '&:hover': {
-                                                    backgroundColor: 'rgba(25, 118, 210, 0.08)'
-                                                }
-                                            }}
-                                        >
-                                            {photoPreview ? 'Изменить фото' : 'Добавить фото'}
-                                            <input
-                                                type="file"
-                                                hidden
-                                                accept="image/jpeg,image/png,image/webp"
-                                                onChange={handlePhotoChange}
-                                            />
-                                        </Button>
-                                        {photoPreview && (
-                                            <Button
-                                                variant="text"
-                                                color="error"
-                                                onClick={() => {
-                                                    setPhotoPreview(null);
-                                                    setFormData(prev => ({ ...prev, photo: null }));
-                                                }}
-                                                sx={{ mb: 2 }}
-                                            >
-                                                Удалить фото
-                                            </Button>
-                                        )}
-                                    </Box>
-                                    <TextField
-                                        name="name"
-                                        label="Имя"
-                                        value={formData.name}
-                                        onChange={handleChange}
-                                        required
-                                        fullWidth
-                                    />
-                                    <TextField
-                                        name="date_of_birth"
-                                        label="Дата рождения"
-                                        type="date"
-                                        value={formData.date_of_birth}
-                                        onChange={handleChange}
-                                        required
-                                        fullWidth
-                                        InputLabelProps={{ shrink: true }}
-                                    />
-                                    <FormControl fullWidth>
-                                        <InputLabel>Группа</InputLabel>
-                                        <Select
-                                            value={formData.group_id || ''}
-                                            onChange={(e) => setFormData({ ...formData, group_id: e.target.value })}
-                                            label="Группа"
-                                        >
-                                            <MenuItem value="">
-                                                <em>Выберите группу</em>
-                                            </MenuItem>
-                                            {groups.map((group) => (
-                                                <MenuItem key={group.group_id} value={group.group_id}>
-                                                    {group.group_name} ({group.age_range})
-                                                </MenuItem>
-                                            ))}
-                                        </Select>
-                                    </FormControl>
-                                    <FormControl fullWidth required>
-                                        <InputLabel>Родитель</InputLabel>
-                                        <Select
-                                            name="parent_id"
-                                            value={formData.parent_id}
-                                            onChange={handleChange}
-                                        >
-                                            {parents.map((parent) => (
-                                                <MenuItem key={parent.user_id} value={parent.user_id}>
-                                                    {`${parent.last_name} ${parent.first_name}`}
-                                                </MenuItem>
-                                            ))}
-                                        </Select>
-                                    </FormControl>
-                                    <TextField
-                                        name="allergies"
-                                        label="Аллергии"
-                                        value={formData.allergies}
-                                        onChange={handleChange}
-                                        fullWidth
-                                        multiline
-                                        rows={2}
-                                    />
-                                    <FormControl fullWidth>
-                                        <InputLabel>Платные услуги</InputLabel>
-                                        <Select
-                                            name="services"
-                                            value={formData.services}
-                                            onChange={handleChange}
-                                            multiple
-                                        >
-                                            {services.map((service) => (
-                                                <MenuItem key={service.service_id} value={service.service_id}>
-                                                    {service.service_name}
-                                                </MenuItem>
-                                            ))}
-                                        </Select>
-                                    </FormControl>
-                                </Box>
-                            </DialogContent>
-                            <DialogActions>
-                                <Button onClick={handleCloseDialog}>Отмена</Button>
-                                <Button type="submit" variant="contained">
-                                    {selectedChild ? 'Сохранить' : 'Добавить'}
-                                </Button>
-                            </DialogActions>
-                        </form>
-                    </Dialog>
-
+                    <ChildrenList
+                        children={filteredChildren}
+                        onDelete={handleDelete}
+                        onEdit={handleEdit}
+                        canEdit={canEdit}
+                        currentGroup={currentGroup}
+                        isLoading={isLoading}
+                        getPhotoUrl={getPhotoUrlFunc}
+                        showTeacherInfo={userRole === 'parent'}
+                    />
+                    <ChildForm
+                        open={openDialog}
+                        onClose={handleCloseDialog}
+                        onSubmit={handleSubmit}
+                        formData={formData}
+                        setFormData={setFormData}
+                        groups={groups}
+                        parents={parents}
+                        services={services}
+                        photoPreview={photoPreview}
+                        handlePhotoChange={handlePhotoUpload}
+                        handlePaste={handlePaste}
+                        selectedChild={selectedChild}
+                        isEdit={!!selectedChild}
+                    />
+                    
                     {/* Диалог подтверждения удаления */}
                     <Dialog
                         open={deleteDialogOpen}
-                        onClose={handleCancelDelete}
-                        PaperProps={{
-                            sx: {
-                                borderRadius: '16px',
-                                padding: '16px',
-                                maxWidth: '400px'
-                            }
-                        }}
+                        onClose={() => setDeleteDialogOpen(false)}
                     >
-                        <DialogTitle sx={{
-                            fontSize: '1.5rem',
-                            fontWeight: 600,
-                            color: 'error.main',
-                            pb: 1
-                        }}>
-                            Подтверждение удаления
-                        </DialogTitle>
+                        <DialogTitle>Подтверждение удаления</DialogTitle>
                         <DialogContent>
-                            <Typography variant="body1" sx={{ mb: 2 }}>
+                            <Typography>
                                 Вы действительно хотите удалить этого ребенка? Это действие нельзя будет отменить.
                             </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                                Все связанные данные, включая рекомендации, также будут удалены.
-                            </Typography>
                         </DialogContent>
-                        <DialogActions sx={{ p: 2, pt: 0 }}>
-                            <Button
-                                onClick={handleCancelDelete}
-                                sx={{
-                                    borderRadius: '8px',
-                                    textTransform: 'none',
-                                    px: 3
-                                }}
+                        <DialogActions>
+                            <Button 
+                                onClick={() => setDeleteDialogOpen(false)}
+                                disabled={isLoading}
                             >
                                 Отмена
                             </Button>
-                            <Button
+                            <Button 
                                 onClick={handleConfirmDelete}
-                                variant="contained"
                                 color="error"
-                                sx={{
-                                    borderRadius: '8px',
-                                    textTransform: 'none',
-                                    px: 3,
-                                    boxShadow: 'none',
-                                    '&:hover': {
-                                        boxShadow: 'none',
-                                        backgroundColor: 'error.dark'
-                                    }
-                                }}
+                                disabled={isLoading}
+                                variant="contained"
                             >
-                                Удалить
+                                {isLoading ? 'Удаление...' : 'Удалить'}
                             </Button>
                         </DialogActions>
                     </Dialog>
-
-                    <Snackbar
-                        open={snackbar.open}
-                        autoHideDuration={4000}
-                        onClose={() => setSnackbar({ ...snackbar, open: false })}
-                    >
-                        <Alert
-                            onClose={() => setSnackbar({ ...snackbar, open: false })}
-                            severity={snackbar.severity}
-                            sx={{ width: '100%' }}
-                        >
-                            {snackbar.message}
-                        </Alert>
-                    </Snackbar>
                 </Box>
             )}
-        </>
+        </Box>
     );
 };
 
-export default ChildrenManagement; 
+export default ChildrenManagement;

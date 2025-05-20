@@ -4,8 +4,14 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { query } = require('../config/db');
 const { body, validationResult } = require('express-validator');
+const logger = require('../utils/logger');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+// Проверяем наличие JWT_SECRET
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+    logger.error('JWT_SECRET не установлен в переменных окружения');
+    process.exit(1);
+}
 
 // Валидация для регистрации
 const registerValidation = [
@@ -65,7 +71,7 @@ router.post('/register', registerValidation, async (req, res) => {
 
         // Создание пользователя
         const result = await query(
-            'INSERT INTO users (email, password_hash, role, first_name, last_name, phone) VALUES ($1, $2, $3, $4, $5, $6) RETURNING user_id, email, role, first_name, last_name',
+            'INSERT INTO users (email, password_hash, role, first_name, last_name, phone) VALUES ($1, $2, $3, $4, $5, $6) RETURNING user_id, email, role, first_name, last_name, created_at',
             [email, hashedPassword, role, first_name, last_name, phone]
         );
 
@@ -75,11 +81,13 @@ router.post('/register', registerValidation, async (req, res) => {
         res.status(201).json({
             token,
             user: {
-                id: user.user_id,
+                id: String(user.user_id),
+                user_id: String(user.user_id),
                 email: user.email,
                 role: user.role,
                 first_name: user.first_name,
-                last_name: user.last_name
+                last_name: user.last_name,
+                created_at: user.created_at
             }
         });
     } catch (err) {
@@ -100,6 +108,7 @@ router.post('/login', loginValidation, async (req, res) => {
         }
 
         const { email, password } = req.body;
+        logger.debug('Попытка входа', { email });
 
         // Проверяем наличие email и пароля
         if (!email || !password) {
@@ -109,38 +118,64 @@ router.post('/login', loginValidation, async (req, res) => {
         }
 
         // Поиск пользователя
-        const result = await query('SELECT * FROM users WHERE email = $1', [email]);
-        if (result.rows.length === 0) {
-            return res.status(401).json({ message: 'Неверный email или пароль' });
-        }
+        const result = await query(
+            'SELECT * FROM users WHERE email = $1',
+            [email]
+        );
 
         const user = result.rows[0];
+
+        if (!user) {
+            logger.debug('Пользователь не найден', { email });
+            return res.status(401).json({ message: 'Неверный email или пароль' });
+        }
 
         // Проверка пароля
         const isMatch = await bcrypt.compare(password, user.password_hash);
         if (!isMatch) {
+            logger.debug('Неверный пароль', { email });
             return res.status(401).json({ message: 'Неверный email или пароль' });
         }
 
         const token = jwt.sign(
-            { id: user.user_id, role: user.role }, 
+            { id: String(user.user_id), role: user.role }, 
             JWT_SECRET, 
             { expiresIn: '24h' }
         );
 
+        logger.info('Успешный вход пользователя:', { 
+            email: user.email, 
+            role: user.role,
+            userId: user.user_id,
+            decodedToken: jwt.decode(token)
+        });
+
+        const userData = {
+            id: String(user.user_id),
+            user_id: String(user.user_id),
+            email: user.email,
+            role: user.role,
+            first_name: user.first_name,
+            last_name: user.last_name,
+            created_at: user.created_at
+        };
+
+        logger.info('Отправка данных пользователя:', userData);
+
         res.json({
             token,
-            user: {
-                id: user.user_id,
-                email: user.email,
-                role: user.role,
-                first_name: user.first_name,
-                last_name: user.last_name
-            }
+            user: userData
         });
     } catch (err) {
-        console.error('Ошибка при входе:', err);
-        res.status(500).json({ message: 'Ошибка сервера при входе в систему' });
+        logger.error('Ошибка при входе:', {
+            error: err.message,
+            stack: err.stack,
+            email: req.body.email
+        });
+        res.status(500).json({ 
+            message: 'Ошибка сервера при входе в систему',
+            details: process.env.NODE_ENV === 'development' ? err.message : undefined
+        });
     }
 });
 
@@ -149,29 +184,45 @@ router.get('/me', async (req, res) => {
     try {
         const token = req.headers.authorization?.split(' ')[1];
         if (!token) {
+            logger.debug('Токен не предоставлен в запросе /me');
             return res.status(401).json({ message: 'Токен не предоставлен' });
         }
 
-        const decoded = jwt.verify(token, JWT_SECRET);
+        let decoded;
+        try {
+            decoded = jwt.verify(token, JWT_SECRET);
+        } catch (jwtError) {
+            logger.debug('Ошибка проверки токена:', { error: jwtError.message });
+            if (jwtError.name === 'JsonWebTokenError') {
+                return res.status(401).json({ message: 'Недействительный токен' });
+            }
+            if (jwtError.name === 'TokenExpiredError') {
+                return res.status(401).json({ message: 'Срок действия токена истек' });
+            }
+            throw jwtError;
+        }
+
         const result = await query(
-            'SELECT user_id, email, role, first_name, last_name, phone FROM users WHERE user_id = $1',
+            'SELECT user_id, email, role, first_name, last_name, phone, created_at FROM users WHERE user_id = $1',
             [decoded.id]
         );
 
-        if (result.rows.length === 0) {
+        const user = result.rows[0];
+        if (!user) {
+            logger.debug('Пользователь не найден при запросе /me', { userId: decoded.id });
             return res.status(404).json({ message: 'Пользователь не найден' });
         }
 
-        res.json(result.rows[0]);
+        res.json(user);
     } catch (err) {
-        console.error('Ошибка при получении данных пользователя:', err);
-        if (err.name === 'JsonWebTokenError') {
-            return res.status(401).json({ message: 'Недействительный токен' });
-        }
-        if (err.name === 'TokenExpiredError') {
-            return res.status(401).json({ message: 'Срок действия токена истек' });
-        }
-        res.status(500).json({ message: 'Ошибка сервера' });
+        logger.error('Ошибка при получении данных пользователя:', {
+            error: err.message,
+            stack: err.stack
+        });
+        res.status(500).json({ 
+            message: 'Ошибка сервера при получении данных пользователя',
+            details: process.env.NODE_ENV === 'development' ? err.message : undefined
+        });
     }
 });
 

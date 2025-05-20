@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useOutletContext } from 'react-router-dom';
 import {
   Box,
   Typography,
@@ -19,7 +20,8 @@ import {
   Snackbar,
   Alert,
   InputLabel,
-  CircularProgress
+  CircularProgress,
+  Container
 } from '@mui/material';
 import {
   Save as SaveIcon,
@@ -29,15 +31,17 @@ import {
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
 import { attendanceApi, groupsApi, childrenApi } from '../api/api';
+import { useGroups } from '../hooks/useGroups';
 
 const Attendance = () => {
   const { user } = useAuth();
+  const { PageTitle } = useOutletContext();
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [selectedGroup, setSelectedGroup] = useState('');
   const [groups, setGroups] = useState([]);
   const [children, setChildren] = useState([]);
   const [attendance, setAttendance] = useState({});
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [snackbar, setSnackbar] = useState({
     open: false,
@@ -45,44 +49,10 @@ const Attendance = () => {
     severity: 'success'
   });
 
-  // Загрузка групп
-  useEffect(() => {
-    const fetchGroups = async () => {
-      try {
-        setLoading(true);
-        const groupsData = await groupsApi.getGroups();
-        console.log('Полученные группы:', groupsData);
-        
-        // Преобразуем данные групп в нужный формат
-        const formattedGroups = groupsData.map(group => ({
-          id: group.group_id || group.id,
-          name: group.group_name || group.name
-        }));
-        
-        console.log('Отформатированные группы:', formattedGroups);
-        setGroups(formattedGroups);
-        
-        // Для учителя автоматически выбираем его группу
-        if (user.role === 'teacher' && user.group_id) {
-          const teacherGroup = formattedGroups.find(g => g.id === user.group_id);
-          if (teacherGroup) {
-            setSelectedGroup(teacherGroup.id);
-          }
-        }
-        // Для остальных ролей выбираем первую группу
-        else if (formattedGroups.length > 0 && user.role === 'admin') {
-          setSelectedGroup(formattedGroups[0].id);
-        }
-      } catch (err) {
-        console.error('Error fetching groups:', err);
-        setError('Ошибка при загрузке групп');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchGroups();
-  }, [user]);
+  const { groups: groupsContext, loading: groupsLoading } = useGroups();
+  
+  // Убедимся, что groups всегда массив
+  const safeGroups = Array.isArray(groupsContext) ? groupsContext : [];
 
   // Загрузка детей при изменении группы
   useEffect(() => {
@@ -91,7 +61,15 @@ const Attendance = () => {
 
       try {
         setLoading(true);
-        const childrenData = await childrenApi.getAllChildren(selectedGroup);
+        // Находим ID группы по её имени
+        const selectedGroupData = safeGroups.find(g => g.name === selectedGroup);
+        if (!selectedGroupData) {
+          throw new Error('Группа не найдена');
+        }
+
+        console.log('Fetching children with params:', { group_id: selectedGroupData.id });
+        const response = await childrenApi.getAll({ group_id: selectedGroupData.id });
+        const childrenData = response.data;
         console.log('Полученные данные детей:', childrenData);
         
         // Фильтруем детей в зависимости от роли пользователя и выбранной группы
@@ -99,13 +77,11 @@ const Attendance = () => {
         if (user.role === 'teacher') {
           // Для учителя показываем только детей из его группы
           filteredChildren = childrenData.filter(child => 
-            child.group_id === user.group_id || child.groupId === user.group_id
+            String(child.group_id) === String(user.group_id)
           );
         } else if (user.role === 'admin') {
           // Для администратора показываем детей только выбранной группы
-          filteredChildren = childrenData.filter(child => 
-            child.group_id === selectedGroup || child.groupId === selectedGroup
-          );
+          filteredChildren = childrenData;
         }
         
         // Преобразуем данные детей в нужный формат
@@ -136,45 +112,50 @@ const Attendance = () => {
 
       try {
         setLoading(true);
+        // Находим ID группы по её имени
+        const selectedGroupData = safeGroups.find(g => g.name === selectedGroup);
+        if (!selectedGroupData) {
+          throw new Error('Группа не найдена');
+        }
+
         const startDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1);
         const endDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 0);
 
-        const attendanceData = await attendanceApi.getGroupAttendance(
-          selectedGroup,
+        const response = await attendanceApi.getGroupAttendance(
+          selectedGroupData.id,
           startDate.toISOString().split('T')[0],
           endDate.toISOString().split('T')[0]
         );
 
-        // Проверяем формат данных
-        if (!Array.isArray(attendanceData)) {
-          throw new Error('Некорректный формат данных от сервера');
-        }
+        console.log('Получены данные посещаемости:', response);
 
-        // Преобразуем полученные данные в нужный формат с проверкой типов
+        // Проверяем наличие данных в ответе
+        const attendanceData = response?.data || [];
+
+        // Преобразуем полученные данные в нужный формат
         const attendanceMap = {};
         children.forEach(child => {
           attendanceMap[child.id] = {};
         });
 
         attendanceData.forEach(record => {
-          if (
-            typeof record.child_id === 'number' &&
-            record.date &&
-            typeof record.is_present === 'boolean'
-          ) {
+          try {
+            const childId = String(record.child_id);
             const date = new Date(record.date);
             const day = date.getDate();
-            
-            if (!attendanceMap[record.child_id]) {
-              attendanceMap[record.child_id] = {};
+            const isPresent = Boolean(record.is_present);
+
+            if (!attendanceMap[childId]) {
+              attendanceMap[childId] = {};
             }
-            
-            attendanceMap[record.child_id][day] = record.is_present;
-          } else {
-            console.error('Некорректный формат записи:', record);
+
+            attendanceMap[childId][day] = isPresent;
+          } catch (err) {
+            console.error('Ошибка обработки записи посещаемости:', record, err);
           }
         });
 
+        console.log('Обработанные данные посещаемости:', attendanceMap);
         setAttendance(attendanceMap);
         setError(null);
       } catch (error) {
@@ -186,7 +167,7 @@ const Attendance = () => {
     };
 
     fetchAttendance();
-  }, [selectedGroup, selectedDate, children]);
+  }, [selectedGroup, selectedDate, children, safeGroups]);
 
   // Получаем дни месяца
   const daysInMonth = new Date(
@@ -198,12 +179,23 @@ const Attendance = () => {
   // Получаем текущую дату
   const currentDate = new Date();
   
-  // Фильтруем дни, оставляя только те, что не превышают текущую дату
-  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1)
-    .filter(day => {
-      const checkDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), day);
-      return checkDate <= currentDate;
-    });
+  // Создаем массив всех дней месяца без фильтрации
+  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+
+  // Проверяем, является ли дата в будущем
+  const isFutureDate = (day) => {
+    const checkDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), day);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return checkDate > today;
+  };
+
+  // Получаем название дня недели
+  const getDayName = (day) => {
+    const date = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), day);
+    const dayNames = ['ВС', 'ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ'];
+    return dayNames[date.getDay()];
+  };
 
   // Обработчик изменения отметки посещаемости
   const handleAttendanceChange = async (childId, date, isPresent) => {
@@ -214,18 +206,14 @@ const Attendance = () => {
       const formattedDate = new Date(date).toISOString().split('T')[0];
 
       const attendanceData = {
-        child_id: Number(childId),
+        child_id: childId,
         date: formattedDate,
         is_present: !isPresent // Инвертируем текущее состояние
       };
       
       console.log('Отправка данных посещаемости:', attendanceData);
       
-      const result = await attendanceApi.markAttendance(attendanceData);
-      
-      if (!result || typeof result.is_present !== 'boolean') {
-        throw new Error('Некорректный ответ от сервера');
-      }
+      await attendanceApi.markAttendance(attendanceData);
 
       // Обновляем состояние только после успешного ответа от сервера
       setAttendance(prev => {
@@ -237,7 +225,7 @@ const Attendance = () => {
           newState[childId] = {};
         }
         
-        newState[childId][day] = result.is_present;
+        newState[childId][day] = !isPresent;
         return newState;
       });
 
@@ -279,47 +267,50 @@ const Attendance = () => {
   const canEditAttendance = ['admin', 'teacher'].includes(user?.role);
 
   return (
-    <Box sx={{ p: 3 }}>
-      <Typography variant="h5" sx={{ mb: 3 }}>
-        Посещаемость
-      </Typography>
+    <Container maxWidth="lg">
+      <Box sx={{ my: 2 }}>
+        <PageTitle>Посещаемость</PageTitle>
+        
+        <Box sx={{ 
+          display: 'flex', 
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          gap: 2,
+          mb: 4 
+        }}>
+          <FormControl sx={{ minWidth: 200 }}>
+            <InputLabel>Месяц</InputLabel>
+            <Select
+              value={selectedDate.getMonth()}
+              onChange={(e) => setSelectedDate(new Date(selectedDate.getFullYear(), e.target.value))}
+              label="Месяц"
+              size="small"
+            >
+              {Array.from({ length: 12 }, (_, i) => (
+                <MenuItem key={i} value={i}>{getMonthName(i)}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
 
-      <Box sx={{ mb: 3, display: 'flex', gap: 2 }}>
-        {user.role === 'admin' && (
-          <FormControl sx={{ minWidth: 200 }} error={!selectedGroup && groups.length > 0}>
+          <FormControl sx={{ minWidth: 200 }}>
             <InputLabel>Группа</InputLabel>
             <Select
               value={selectedGroup}
-              onChange={(e) => {
-                console.log('Выбрана группа:', e.target.value);
-                setSelectedGroup(e.target.value);
-              }}
+              onChange={(e) => setSelectedGroup(e.target.value)}
               label="Группа"
+              size="small"
             >
-              {groups.map((group) => (
-                <MenuItem key={group.id} value={group.id}>
+              {safeGroups.map((group) => (
+                <MenuItem key={group.id} value={group.name}>
                   {group.name}
                 </MenuItem>
               ))}
             </Select>
           </FormControl>
-        )}
-
-        <FormControl sx={{ minWidth: 200 }}>
-          <InputLabel>Месяц</InputLabel>
-          <Select
-            value={selectedDate.getMonth()}
-            onChange={(e) => setSelectedDate(new Date(selectedDate.getFullYear(), e.target.value))}
-            label="Месяц"
-          >
-            {Array.from({ length: 12 }, (_, i) => (
-              <MenuItem key={i} value={i}>{getMonthName(i)}</MenuItem>
-            ))}
-          </Select>
-        </FormControl>
+        </Box>
       </Box>
 
-      {loading ? (
+      {!selectedGroup ? null : loading ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', my: 3 }}>
           <CircularProgress />
         </Box>
@@ -332,11 +323,30 @@ const Attendance = () => {
           В выбранной группе нет детей
         </Alert>
       ) : (
-        <TableContainer component={Paper} sx={{ maxHeight: 'calc(100vh - 300px)', overflow: 'auto' }}>
+        <TableContainer component={Paper} sx={{ 
+          maxHeight: 'calc(100vh - 300px)', 
+          overflow: 'auto',
+          '& .MuiTable-root': {
+            borderCollapse: 'separate',
+            borderSpacing: 0,
+          }
+        }}>
           <Table stickyHeader size="small">
             <TableHead>
               <TableRow>
-                <TableCell sx={{ fontWeight: 'bold', minWidth: 200, bgcolor: 'background.paper' }}>
+                <TableCell 
+                  sx={{ 
+                    fontWeight: 'bold', 
+                    width: '200px',
+                    minWidth: '200px',
+                    maxWidth: '200px',
+                    bgcolor: 'background.paper',
+                    position: 'sticky',
+                    left: 0,
+                    zIndex: 3,
+                    borderRight: '1px solid rgba(224, 224, 224, 1)'
+                  }}
+                >
                   ФИО ребенка
                 </TableCell>
                 {days.map(day => (
@@ -344,12 +354,22 @@ const Attendance = () => {
                     key={day}
                     align="center"
                     sx={{
-                      minWidth: 50,
+                      width: '50px',
+                      minWidth: '50px',
+                      maxWidth: '50px',
                       bgcolor: isWeekend(day) ? 'grey.100' : 'background.paper',
-                      fontWeight: 'bold'
+                      fontWeight: 'bold',
+                      p: 1
                     }}
                   >
-                    {day}
+                    <Box>
+                      <Typography variant="caption" display="block" sx={{ fontSize: '0.7rem', color: 'text.secondary' }}>
+                        {getDayName(day)}
+                      </Typography>
+                      <Typography variant="body2">
+                        {day}
+                      </Typography>
+                    </Box>
                   </TableCell>
                 ))}
               </TableRow>
@@ -357,27 +377,46 @@ const Attendance = () => {
             <TableBody>
               {children.map(child => (
                 <TableRow key={child.id}>
-                  <TableCell component="th" scope="row" sx={{ bgcolor: 'background.paper' }}>
+                  <TableCell 
+                    component="th" 
+                    scope="row" 
+                    sx={{ 
+                      bgcolor: 'background.paper',
+                      position: 'sticky',
+                      left: 0,
+                      zIndex: 2,
+                      borderRight: '1px solid rgba(224, 224, 224, 1)'
+                    }}
+                  >
                     {child.name}
                   </TableCell>
                   {days.map(day => {
                     const isWeekendDay = isWeekend(day);
+                    const isPresent = !!attendance[child.id]?.[day];
+                    const isFuture = isFutureDate(day);
                     return (
                       <TableCell
                         key={day}
                         align="center"
                         sx={{
-                          bgcolor: isWeekendDay ? 'grey.100' : 'inherit',
-                          cursor: canEditAttendance && !isWeekendDay ? 'pointer' : 'not-allowed'
+                          width: '50px',
+                          minWidth: '50px',
+                          maxWidth: '50px',
+                          bgcolor: isWeekendDay ? 'grey.100' : isFuture ? 'rgba(0, 0, 0, 0.04)' : 'inherit',
+                          cursor: canEditAttendance && !isWeekendDay ? 'pointer' : 'not-allowed',
+                          p: 0,
+                          '& .MuiCheckbox-root': {
+                            p: 0.5
+                          }
                         }}
                         onClick={() => canEditAttendance && !isWeekendDay && handleAttendanceChange(
                           child.id, 
                           `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
-                          !!attendance[child.id]?.[day]
+                          isPresent
                         )}
                       >
                         <Checkbox
-                          checked={!!attendance[child.id]?.[day]}
+                          checked={isPresent}
                           color="primary"
                           size="small"
                           disabled={!canEditAttendance || isWeekendDay}
@@ -404,7 +443,7 @@ const Attendance = () => {
           {snackbar.message}
         </Alert>
       </Snackbar>
-    </Box>
+    </Container>
   );
 };
 

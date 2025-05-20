@@ -1,11 +1,15 @@
-const errorHandler = (err, req, res, next) => {
-    console.error('Ошибка:', err);
+module.exports = (err, req, res, next) => {
+    console.error('Error:', {
+        message: err.message,
+        stack: err.stack,
+        timestamp: new Date().toISOString()
+    });
 
     // Обработка ошибок валидации
     if (err.name === 'ValidationError') {
         return res.status(400).json({
             error: 'Ошибка валидации',
-            details: err.message
+            details: err.details
         });
     }
 
@@ -27,8 +31,8 @@ const errorHandler = (err, req, res, next) => {
     // Ошибки аутентификации
     if (err.name === 'UnauthorizedError') {
         return res.status(401).json({
-            error: 'Ошибка аутентификации',
-            details: 'Неверные учетные данные'
+            error: 'Ошибка авторизации',
+            message: err.message
         });
     }
 
@@ -36,7 +40,7 @@ const errorHandler = (err, req, res, next) => {
     if (err.name === 'ForbiddenError') {
         return res.status(403).json({
             error: 'Доступ запрещен',
-            details: 'У вас нет прав для выполнения этого действия'
+            message: err.message
         });
     }
 
@@ -51,8 +55,6 @@ const errorHandler = (err, req, res, next) => {
     // Общая ошибка сервера
     res.status(500).json({
         error: 'Внутренняя ошибка сервера',
-        details: process.env.NODE_ENV === 'development' ? err.message : 'Произошла ошибка на сервере'
+        message: process.env.NODE_ENV === 'development' ? err.message : 'Что-то пошло не так'
     });
-};
-
-module.exports = errorHandler; 
+}; 

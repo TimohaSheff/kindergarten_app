@@ -54,6 +54,8 @@ import { useAccessibility } from '../contexts/AccessibilityContext';
 import { styled } from '@mui/material/styles';
 import { api } from '../api/api';
 import { getRoleName } from '../constants/roles';
+import { getPhotoUrl } from '../utils/photoUtils';
+import { useOutletContext } from 'react-router-dom';
 
 const StyledCard = styled(Card)(({ theme }) => ({
   height: '100%',
@@ -69,15 +71,34 @@ const StyledCard = styled(Card)(({ theme }) => ({
 }));
 
 const StyledAvatar = styled(Avatar)(({ theme }) => ({
-  width: 120,
-  height: 120,
+  width: 180,
+  height: 180,
+  margin: '0 auto 16px',
   border: `4px solid ${alpha(theme.palette.primary.main, 0.2)}`,
   background: `linear-gradient(135deg, ${theme.palette.primary.main} 0%, ${theme.palette.primary.dark} 100%)`,
   boxShadow: `0 8px 32px ${alpha(theme.palette.primary.main, 0.2)}`,
   transition: 'all 0.3s ease-in-out',
+  fontSize: '4rem',
+  fontWeight: 500,
   '&:hover': {
-    transform: 'scale(1.05) rotate(5deg)',
+    transform: 'scale(1.02)',
     boxShadow: `0 12px 48px ${alpha(theme.palette.primary.main, 0.3)}`,
+  }
+}));
+
+const StyledTextField = styled(TextField)(({ theme }) => ({
+  '& .MuiInputBase-input': {
+    color: theme.palette.text.primary,
+    fontWeight: 500,
+  },
+  '& .MuiInputLabel-root': {
+    color: theme.palette.text.primary,
+    fontWeight: 500,
+  },
+  '& .Mui-disabled': {
+    WebkitTextFillColor: theme.palette.text.primary,
+    color: theme.palette.text.primary,
+    opacity: 0.8,
   }
 }));
 
@@ -87,14 +108,23 @@ const StyledChip = styled(Chip)(({ theme }) => ({
   color: theme.palette.primary.main,
   border: `1px solid ${alpha(theme.palette.primary.main, 0.2)}`,
   fontWeight: 600,
+  padding: '8px',
+  fontSize: '0.875rem',
+  margin: '16px auto 0',
+  minWidth: 'auto',
+  width: 'fit-content',
   '&:hover': {
     backgroundColor: alpha(theme.palette.primary.main, 0.2),
+  },
+  '& .MuiChip-label': {
+    padding: '0 8px'
   }
 }));
 
 const Profile = () => {
   const theme = useTheme();
   const { user } = useAuth();
+  const { PageTitle } = useOutletContext();
   const { 
     isHighContrastMode, 
     isBigFontMode, 
@@ -110,11 +140,11 @@ const Profile = () => {
     lastName: '',
     email: '',
     phone: '',
-    address: '',
-    birthDate: '',
+    createdAt: '',
     group: '',
-    role: '',
-    avatar: null
+    role: 'parent',
+    avatar: null,
+    children: []
   });
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
   const [openPasswordDialog, setOpenPasswordDialog] = useState(false);
@@ -128,17 +158,94 @@ const Profile = () => {
     const fetchUserData = async () => {
       try {
         setLoading(true);
-        const data = await api.getUserProfile(user.id);
+        const data = await api.profile.get();
+        console.log('Полученные данные профиля:', data);
+        
+        // Форматируем дату создания из БД
+        let createdAt = 'Не указана';
+        
+        if (data.created_at) {
+          try {
+            const dateStr = data.created_at;
+            console.log('Дата создания из профиля:', dateStr, typeof dateStr);
+            
+            // Если это строка с датой
+            if (typeof dateStr === 'string') {
+              let datePart = dateStr;
+              
+              // Удаляем миллисекунды, если они есть
+              if (datePart.includes('.')) {
+                datePart = datePart.split('.')[0];
+              }
+              
+              // Для формата с пробелом или T
+              if (datePart.includes(' ') || datePart.includes('T')) {
+                [datePart] = datePart.split(/[ T]/);
+              }
+              
+              // Извлекаем компоненты даты
+              if (datePart && datePart.includes('-')) {
+                const [year, month, day] = datePart.split('-');
+                if (year && month && day) {
+                  createdAt = `${day}.${month}.${year}`;
+                  console.log('Отформатированная дата из строки:', createdAt);
+                }
+              }
+            }
+            // Если это timestamp
+            else if (!isNaN(dateStr) && (typeof dateStr === 'number' || !isNaN(Number(dateStr)))) {
+              const timestamp = typeof dateStr === 'number' ? dateStr : Number(dateStr);
+              const date = new Date(timestamp);
+              if (!isNaN(date.getTime())) {
+                const day = String(date.getDate()).padStart(2, '0');
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const year = date.getFullYear();
+                createdAt = `${day}.${month}.${year}`;
+                console.log('Отформатированная дата из timestamp:', createdAt);
+              }
+            }
+          } catch (error) {
+            console.error('Ошибка при форматировании даты:', error);
+            createdAt = 'Не указана';
+          }
+        } else {
+          console.log('Дата создания отсутствует в данных профиля:', data);
+        }
+        
+        // Получаем детей через отдельный запрос, если пользователь - родитель
+        let childrenData = [];
+        if (data.role === 'parent' || user?.role === 'parent') {
+          try {
+            const childrenResponse = await api.children.getAll({ parent_id: data.user_id || user.id });
+            console.log('Данные о детях из отдельного запроса:', childrenResponse);
+            
+            // Фильтруем уникальных детей по child_id и форматируем их имена
+            const uniqueChildren = Array.from(new Map(
+              (childrenResponse.data || []).map(child => [
+                child.child_id, 
+                {
+                  ...child,
+                  name: child.name || `${child.first_name} ${child.last_name}`.trim()
+                }
+              ])
+            ).values());
+            
+            childrenData = uniqueChildren;
+          } catch (error) {
+            console.error('Ошибка при загрузке детей:', error);
+          }
+        }
+
         setUserData({
-          firstName: data.firstName || '',
-          lastName: data.lastName || '',
+          firstName: data.first_name || data.firstName || '',
+          lastName: data.last_name || data.lastName || '',
           email: data.email || '',
           phone: data.phone || '',
-          address: data.address || '',
-          birthDate: data.birthDate || '',
+          createdAt: createdAt,
           group: data.group || '',
           role: data.role || user?.role || 'parent',
-          avatar: data.avatar || null
+          avatar: data.photo_path || data.avatar || null,
+          children: childrenData
         });
         setError(null);
       } catch (err) {
@@ -154,9 +261,7 @@ const Profile = () => {
       }
     };
 
-    if (user?.id) {
-      fetchUserData();
-    }
+    fetchUserData();
   }, [user]);
 
   const handleTabChange = (event, newValue) => {
@@ -164,13 +269,21 @@ const Profile = () => {
   };
 
   const handleEdit = () => {
+    if (userData.role === 'parent') {
+      setSnackbar({
+        open: true,
+        message: 'Редактирование профиля недоступно для родителей',
+        severity: 'warning'
+      });
+      return;
+    }
     setEditMode(true);
   };
 
   const handleSave = async () => {
     try {
       setLoading(true);
-      await api.updateUserProfile(user.id, userData);
+      await api.profile.update(user.id, userData);
       setSnackbar({ open: true, message: 'Профиль обновлен', severity: 'success' });
       setEditMode(false);
       setError(null);
@@ -195,7 +308,7 @@ const Profile = () => {
 
     try {
       setLoading(true);
-      await api.changePassword(user.id, {
+      await api.profile.changePassword(user.id, {
         currentPassword: passwordData.currentPassword,
         newPassword: passwordData.newPassword
       });
@@ -225,10 +338,25 @@ const Profile = () => {
     if (file) {
       try {
         setLoading(true);
+        console.log('Загрузка файла:', {
+          name: file.name,
+          type: file.type,
+          size: file.size
+        });
+
         const formData = new FormData();
         formData.append('avatar', file);
-        const response = await api.uploadAvatar(user.id, formData);
-        setUserData({ ...userData, avatar: response.avatarUrl });
+
+        console.log('Отправка запроса на загрузку аватара...');
+        const response = await api.profile.uploadAvatar(user.id, formData);
+        
+        console.log('Ответ сервера:', response);
+
+        setUserData(prevData => ({
+          ...prevData,
+          avatar: response.avatarUrl || response.avatar
+        }));
+
         setSnackbar({
           open: true,
           message: 'Аватар успешно обновлен',
@@ -236,11 +364,25 @@ const Profile = () => {
         });
         setError(null);
       } catch (err) {
-        console.error('Error uploading avatar:', err);
-        setError(err.message || 'Ошибка при загрузке аватара');
+        console.error('Ошибка при загрузке аватара:', {
+          message: err.message,
+          response: err.response?.data,
+          status: err.response?.status
+        });
+        
+        let errorMessage = 'Ошибка при загрузке аватара';
+        if (err.response?.status === 413) {
+          errorMessage = 'Файл слишком большой';
+        } else if (err.response?.status === 415) {
+          errorMessage = 'Неподдерживаемый формат файла';
+        } else if (err.response?.data?.message) {
+          errorMessage = err.response.data.message;
+        }
+
+        setError(errorMessage);
         setSnackbar({
           open: true,
-          message: 'Ошибка при загрузке аватара',
+          message: errorMessage,
           severity: 'error'
         });
       } finally {
@@ -253,41 +395,46 @@ const Profile = () => {
     <Grid container spacing={3}>
       <Grid item xs={12} md={4}>
         <StyledCard>
-          <CardContent sx={{ textAlign: 'center', position: 'relative' }}>
+          <CardContent sx={{ 
+            textAlign: 'center', 
+            position: 'relative',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center'
+          }}>
             <input
               accept="image/*"
               type="file"
               id="avatar-input"
               hidden
               onChange={handleAvatarChange}
+              disabled={userData.role === 'parent'}
             />
             <label htmlFor="avatar-input">
-              <Box sx={{ position: 'relative', display: 'inline-block' }}>
+              <Box sx={{ position: 'relative', display: 'inline-block', mb: 2 }}>
                 <StyledAvatar
-                  src={userData.avatar}
+                  src={userData.avatar ? getPhotoUrl(userData.avatar) : null}
                   alt={`${userData.firstName} ${userData.lastName}`}
                 >
-                  {userData.firstName?.[0]}{userData.lastName?.[0]}
+                  {!userData.avatar && `${userData.firstName?.[0]}${userData.lastName?.[0]}`}
                 </StyledAvatar>
-                <IconButton
-                  sx={{
-                    position: 'absolute',
-                    bottom: 0,
-                    right: 0,
-                    bgcolor: 'background.paper',
-                    '&:hover': { bgcolor: 'background.paper' }
-                  }}
-                >
-                  <CameraIcon />
-                </IconButton>
+                {userData.role !== 'parent' && (
+                  <IconButton
+                    sx={{
+                      position: 'absolute',
+                      bottom: 5,
+                      right: 5,
+                      bgcolor: 'background.paper',
+                      '&:hover': { bgcolor: 'background.paper' },
+                      width: '40px',
+                      height: '40px'
+                    }}
+                  >
+                    <CameraIcon />
+                  </IconButton>
+                )}
               </Box>
             </label>
-            <Typography variant="h5" sx={{ mt: 2, fontWeight: 600 }}>
-              {userData.firstName} {userData.lastName}
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              {userData.email}
-            </Typography>
             <StyledChip
               label={getRoleName(userData.role)}
               icon={userData.role === 'parent' ? <PersonIcon /> : <SchoolIcon />}
@@ -299,10 +446,10 @@ const Profile = () => {
         <StyledCard>
           <CardContent>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-              <Typography variant="h6" sx={{ fontWeight: 600 }}>
+              <Typography variant="h6" sx={{ fontWeight: 600, color: 'text.primary' }}>
                 Личная информация
               </Typography>
-              {!editMode ? (
+              {!editMode && userData.role !== 'parent' && (
                 <Button
                   startIcon={<EditIcon />}
                   onClick={handleEdit}
@@ -316,7 +463,8 @@ const Profile = () => {
                 >
                   Редактировать
                 </Button>
-              ) : (
+              )}
+              {editMode && (
                 <Button
                   startIcon={<SaveIcon />}
                   onClick={handleSave}
@@ -334,122 +482,75 @@ const Profile = () => {
             </Box>
             <Grid container spacing={3}>
               <Grid item xs={12} sm={6}>
-                <TextField
+                <StyledTextField
                   fullWidth
                   label="Имя"
                   value={userData.firstName}
                   onChange={(e) => setUserData({ ...userData, firstName: e.target.value })}
-                  disabled={!editMode}
+                  disabled={!editMode || userData.role === 'parent'}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
-                <TextField
+                <StyledTextField
                   fullWidth
                   label="Фамилия"
                   value={userData.lastName}
                   onChange={(e) => setUserData({ ...userData, lastName: e.target.value })}
-                  disabled={!editMode}
+                  disabled={!editMode || userData.role === 'parent'}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
-                <TextField
+                <StyledTextField
                   fullWidth
                   label="Email"
                   value={userData.email}
                   onChange={(e) => setUserData({ ...userData, email: e.target.value })}
-                  disabled={!editMode}
+                  disabled={!editMode || userData.role === 'parent'}
                   type="email"
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
-                <TextField
+                <StyledTextField
                   fullWidth
                   label="Телефон"
                   value={userData.phone}
                   onChange={(e) => setUserData({ ...userData, phone: e.target.value })}
-                  disabled={!editMode}
-                />
-              </Grid>
-              <Grid item xs={12}>
-                <TextField
-                  fullWidth
-                  label="Адрес"
-                  value={userData.address}
-                  onChange={(e) => setUserData({ ...userData, address: e.target.value })}
-                  disabled={!editMode}
+                  disabled={!editMode || userData.role === 'parent'}
                 />
               </Grid>
               <Grid item xs={12} sm={6}>
-                <TextField
+                <StyledTextField
                   fullWidth
-                  label="Дата рождения"
-                  value={userData.birthDate}
-                  onChange={(e) => setUserData({ ...userData, birthDate: e.target.value })}
-                  disabled={!editMode}
-                  type="date"
-                  InputLabelProps={{ shrink: true }}
-                />
-              </Grid>
-              <Grid item xs={12} sm={6}>
-                <TextField
-                  fullWidth
-                  label="Группа"
-                  value={userData.group}
+                  label="Дата создания аккаунта"
+                  value={userData.createdAt || 'Не указана'}
                   disabled
+                  InputLabelProps={{
+                    shrink: true,
+                  }}
                 />
               </Grid>
-            </Grid>
-          </CardContent>
-        </StyledCard>
-      </Grid>
-    </Grid>
-  );
-
-  const renderSecuritySettings = () => (
-    <Grid container spacing={3}>
-      <Grid item xs={12}>
-        <StyledCard>
-          <CardContent>
-            <Typography variant="h6" sx={{ fontWeight: 600, mb: 3 }}>
-              Безопасность
-            </Typography>
-            <List>
-              <ListItem sx={{ 
-                display: 'flex', 
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                py: 2
-              }}>
-                <Box sx={{ display: 'flex', alignItems: 'center', flex: 1, mr: 4 }}>
-                  <ListItemIcon>
-                    <SecurityIcon color="primary" />
-                  </ListItemIcon>
-                  <ListItemText
-                    primary="Изменить пароль"
-                    secondary="Обновите ваш пароль для безопасности"
+              {userData.role === 'parent' && (
+                <Grid item xs={12} sm={6}>
+                  <StyledTextField
+                    fullWidth
+                    label="Дети"
+                    value={userData.children?.map(child => child.name || `${child.first_name} ${child.last_name}`.trim()).filter(Boolean).join(', ') || 'Нет данных о детях'}
+                    disabled
+                    multiline
                   />
-                </Box>
-                <Button
-                  variant="outlined"
-                  onClick={() => setOpenPasswordDialog(true)}
-                  sx={{
-                    borderRadius: '12px',
-                    textTransform: 'none',
-                    fontWeight: 600,
-                    color: 'primary.main',
-                    borderColor: (theme) => alpha(theme.palette.primary.main, 0.3),
-                    '&:hover': {
-                      borderColor: 'primary.main',
-                      backgroundColor: (theme) => alpha(theme.palette.primary.main, 0.08)
-                    },
-                    minWidth: '120px',
-                    height: '40px'
-                  }}
-                >
-                  Изменить
-                </Button>
-              </ListItem>
-            </List>
+                </Grid>
+              )}
+              {userData.role !== 'admin' && userData.role !== 'psychologist' && userData.role !== 'parent' && (
+                <Grid item xs={12} sm={6}>
+                  <StyledTextField
+                    fullWidth
+                    label="Группа"
+                    value={userData.group}
+                    disabled
+                  />
+                </Grid>
+              )}
+            </Grid>
           </CardContent>
         </StyledCard>
       </Grid>
@@ -525,19 +626,9 @@ const Profile = () => {
 
     return (
       <Box sx={{ pt: { xs: 4, sm: 6 } }}>
-        <Typography 
-          variant="h4" 
-          sx={{
-            fontWeight: 700,
-            mb: 4,
-            background: 'linear-gradient(135deg, #1E293B 0%, #334155 100%)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            fontSize: isBigFontMode ? '2.5rem' : '2rem'
-          }}
-        >
-          Профиль
-        </Typography>
+        <Box sx={{ pl: 3, pt: 1 }}>
+          <PageTitle>Профиль</PageTitle>
+        </Box>
 
         <Tabs
           value={selectedTab}
@@ -550,11 +641,6 @@ const Profile = () => {
             icon={<PersonIcon />}
           />
           <Tab
-            value="security"
-            label="Безопасность"
-            icon={<SecurityIcon />}
-          />
-          <Tab
             value="settings"
             label="Настройки"
             icon={<SettingsIcon />}
@@ -562,7 +648,6 @@ const Profile = () => {
         </Tabs>
 
         {selectedTab === 'personal' && renderPersonalInfo()}
-        {selectedTab === 'security' && renderSecuritySettings()}
         {selectedTab === 'settings' && renderSettings()}
       </Box>
     );

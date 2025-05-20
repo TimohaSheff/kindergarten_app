@@ -1,178 +1,214 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { authApi } from '../api/api';
-
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3002/api';
+import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef } from 'react';
+import axios from '../utils/axios';
+import { useSnackbar } from '../hooks/useSnackbar';
+import { CircularProgress, Box } from '@mui/material';
 
 const AuthContext = createContext(null);
 
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth должен использоваться внутри AuthProvider');
-  }
-  return context;
+const initialState = {
+    isAuthenticated: false,
+    user: null,
+    loading: true,
+    error: null
 };
 
-export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [initialized, setInitialized] = useState(false);
+const authReducer = (state, action) => {
+    switch (action.type) {
+        case 'AUTH_START':
+            return {
+                ...state,
+                loading: true,
+                error: null
+            };
+        case 'AUTH_SUCCESS':
+            return {
+                isAuthenticated: true,
+                user: action.payload,
+                loading: false,
+                error: null
+            };
+        case 'AUTH_FAILURE':
+            return {
+                isAuthenticated: false,
+                user: null,
+                loading: false,
+                error: action.payload
+            };
+        case 'AUTH_LOGOUT':
+            return {
+                isAuthenticated: false,
+                user: null,
+                loading: false,
+                error: null
+            };
+        default:
+            return state;
+    }
+};
 
-  useEffect(() => {
-    const checkAuth = async () => {
-      try {
+export function AuthProvider({ children }) {
+    const [state, dispatch] = useReducer(authReducer, initialState);
+    const { showSnackbar } = useSnackbar();
+    const isMounted = useRef(true);
+    const initialCheckDone = useRef(false);
+
+    const checkAuth = useCallback(async () => {
+        if (!isMounted.current || initialCheckDone.current) return;
+
         const token = localStorage.getItem('token');
         const savedUser = localStorage.getItem('user');
-        
+
         if (!token) {
-          setUser(null);
-          setLoading(false);
-          setInitialized(true);
-          return;
+            dispatch({ type: 'AUTH_FAILURE', payload: 'Токен не найден' });
+            initialCheckDone.current = true;
+            return false;
         }
 
-        if (savedUser) {
-          try {
-            const parsedUser = JSON.parse(savedUser);
-            if (parsedUser && parsedUser.role) {
-              setUser(parsedUser);
-              
-              // Проверяем валидность токена
-              const response = await fetch(`${API_BASE_URL}/auth/me`, {
-                headers: {
-                  'Authorization': `Bearer ${token}`
-                }
-              });
-              
-              if (!response.ok) {
-                throw new Error('Token invalid');
-              }
-              
-              setLoading(false);
-              setInitialized(true);
-              return;
-            }
-          } catch (error) {
-            console.error('Error parsing saved user or validating token:', error);
-            localStorage.removeItem('token');
-            localStorage.removeItem('user');
-            setUser(null);
-            setLoading(false);
-            setInitialized(true);
-            return;
-          }
-        }
-        
         try {
-          const response = await fetch(`${API_BASE_URL}/auth/me`, {
-            headers: {
-              'Authorization': `Bearer ${token}`
+            dispatch({ type: 'AUTH_START' });
+
+            if (savedUser) {
+                const userData = JSON.parse(savedUser);
+                if (userData && userData.user_id) {
+                    dispatch({
+                        type: 'AUTH_SUCCESS',
+                        payload: userData
+                    });
+                    initialCheckDone.current = true;
+                    return true;
+                }
             }
-          });
-          
-          if (response.ok) {
-            const userData = await response.json();
-            const normalizedUser = {
-              id: userData.user_id || userData.id,
-              email: userData.email,
-              role: userData.role,
-              first_name: userData.first_name,
-              last_name: userData.last_name
-            };
+
+            const response = await axios.getCurrentUser();
             
-            setUser(normalizedUser);
-            localStorage.setItem('user', JSON.stringify(normalizedUser));
-          } else {
-            throw new Error('Failed to validate token');
-          }
+            if (response && response.user_id && isMounted.current) {
+                const userData = {
+                    ...response,
+                    id: String(response.user_id),
+                    user_id: String(response.user_id)
+                };
+                
+                dispatch({ 
+                    type: 'AUTH_SUCCESS', 
+                    payload: userData
+                });
+                localStorage.setItem('user', JSON.stringify(userData));
+                initialCheckDone.current = true;
+                return true;
+            } else {
+                if (isMounted.current) {
+                    dispatch({ type: 'AUTH_FAILURE', payload: 'Ошибка при получении данных пользователя' });
+                }
+                initialCheckDone.current = true;
+                return false;
+            }
         } catch (error) {
-          console.error('Auth check error:', error);
-          if (error.message !== 'Failed to fetch') {
-            localStorage.removeItem('token');
-            localStorage.removeItem('user');
-            setUser(null);
-          }
+            console.error('Ошибка при проверке аутентификации:', error);
+            if (error.response && error.response.status === 401) {
+                localStorage.removeItem('token');
+                localStorage.removeItem('user');
+            }
+            if (isMounted.current) {
+                dispatch({ type: 'AUTH_FAILURE', payload: error.message || 'Ошибка при проверке аутентификации' });
+            }
+            initialCheckDone.current = true;
+            return false;
         }
-      } finally {
-        setLoading(false);
-        setInitialized(true);
-      }
+    }, []);
+
+    useEffect(() => {
+        isMounted.current = true;
+        checkAuth();
+        return () => {
+            isMounted.current = false;
+        };
+    }, [checkAuth]);
+
+    const login = async (credentials) => {
+        try {
+            dispatch({ type: 'AUTH_START' });
+            console.log('Attempting login with credentials:', credentials);
+            
+            const response = await axios.login(credentials);
+            console.log('Login response:', response);
+            
+            if (!response || !response.data || !response.data.token || !response.data.user) {
+                throw new Error('Неверный формат ответа от сервера');
+            }
+            
+            localStorage.setItem('token', response.data.token);
+            localStorage.setItem('user', JSON.stringify(response.data.user));
+            
+            dispatch({
+                type: 'AUTH_SUCCESS',
+                payload: {
+                    ...response.data.user,
+                    id: String(response.data.user.id || response.data.user.user_id),
+                    user_id: String(response.data.user.id || response.data.user.user_id)
+                }
+            });
+            
+            showSnackbar({
+                message: 'Вы успешно вошли в систему',
+                severity: 'success'
+            });
+            
+            return { success: true, user: response.data.user };
+        } catch (error) {
+            console.error('Login error:', error);
+            const errorMessage = error.response?.data?.message || error.message || 'Ошибка при входе в систему';
+            
+            dispatch({ 
+                type: 'AUTH_FAILURE', 
+                payload: errorMessage 
+            });
+            
+            showSnackbar({
+                message: errorMessage,
+                severity: 'error'
+            });
+            
+            throw new Error(errorMessage);
+        }
     };
 
-    checkAuth();
-  }, []);
+    const logout = async () => {
+        try {
+            await axios.logout();
+        } catch (error) {
+            console.error('Ошибка при выходе:', error);
+        } finally {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            dispatch({ type: 'AUTH_LOGOUT' });
+            window.location.href = '/';
+        }
+    };
 
-  const login = async (email, password) => {
-    try {
-      setLoading(true);
-      const data = await authApi.login({ email, password });
-      
-      if (!data || !data.user) {
-        throw new Error('Данные пользователя не получены');
-      }
-
-      const normalizedUser = {
-        id: data.user.id || data.user.user_id,
-        email: data.user.email,
-        role: data.user.role,
-        first_name: data.user.first_name,
-        last_name: data.user.last_name
-      };
-
-      localStorage.setItem('token', data.token);
-      localStorage.setItem('user', JSON.stringify(normalizedUser));
-      
-      setUser(normalizedUser);
-      return data;
-    } catch (error) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      throw error;
-    } finally {
-      setLoading(false);
+    if (state.loading && !initialCheckDone.current) {
+        return (
+            <Box display="flex" justifyContent="center" alignItems="center" minHeight="100vh">
+                <CircularProgress />
+            </Box>
+        );
     }
-  };
 
-  const register = async (userData) => {
-    try {
-      setLoading(true);
-      const data = await authApi.register(userData);
-      setUser(data.user);
-      return data;
-    } catch (error) {
-      throw error;
-    } finally {
-      setLoading(false);
+    return (
+        <AuthContext.Provider value={{ 
+            ...state,
+            login,
+            logout,
+            checkAuth
+        }}>
+            {children}
+        </AuthContext.Provider>
+    );
+}
+
+export const useAuth = () => {
+    const context = useContext(AuthContext);
+    if (!context) {
+        throw new Error('useAuth must be used within an AuthProvider');
     }
-  };
-
-  const logout = () => {
-    setLoading(true);
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    setUser(null);
-    setLoading(false);
-  };
-
-  const isAuthenticated = Boolean(user && localStorage.getItem('token'));
-
-  const value = {
-    user,
-    loading,
-    initialized,
-    login,
-    register,
-    logout,
-    isAuthenticated
-  };
-
-  if (!initialized) {
-    return null;
-  }
-
-  return (
-    <AuthContext.Provider value={value}>
-      {children}
-    </AuthContext.Provider>
-  );
+    return context;
 }; 

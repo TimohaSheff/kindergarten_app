@@ -1,1231 +1,858 @@
-import axios from 'axios';
+import axios from '../utils/axios';
+import { API_CONFIG } from '../config';
+import { AUTH_CONFIG, REQUEST_CONFIG } from './config';
 
-// Базовый URL API
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3002/api';
-console.log('API Base URL:', API_BASE_URL);
-
-// Конфигурация axios с токеном
-const axiosConfig = () => {
-  const token = localStorage.getItem('token');
-  return {
-    headers: token ? {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    } : {
-      'Content-Type': 'application/json'
-    },
-    validateStatus: function (status) {
-      return status >= 200 && status < 500; // Принимаем только статусы 2xx-4xx
-    }
-  };
-};
-
-// Функция для обработки ошибок API
-const handleApiError = (error) => {
-  if (error.response) {
-    const errorMessage = error.response.data?.error || 
-                       error.response.data?.message || 
-                       'Ошибка сервера при выполнении запроса';
-    throw new Error(errorMessage);
-  } else if (error.request) {
-    throw new Error('Не удалось получить ответ от сервера');
-  } else {
-    throw new Error('Ошибка при выполнении запроса');
-  }
-};
-
-// Вспомогательная функция для обработки ответов
-const handleResponse = async (response) => {
-  if (!response.ok) {
-    const contentType = response.headers.get('content-type');
-    let errorMessage = 'Ошибка сервера';
-    let errorData = null;
-    
-    try {
-      if (contentType && contentType.includes('application/json')) {
-        errorData = await response.json();
-        console.error('API Error Response:', {
-          status: response.status,
-          statusText: response.statusText,
-          data: errorData,
-          url: response.url
-        });
-        
-        if (errorData.errors && Array.isArray(errorData.errors)) {
-          errorMessage = errorData.errors.map(err => err.msg || err).join(', ');
-        } else if (errorData.message) {
-          errorMessage = errorData.message;
-        }
-      } else {
-        const textError = await response.text();
-        console.error('API Error (text):', {
-          status: response.status,
-          statusText: response.statusText,
-          text: textError,
-          url: response.url
-        });
-        errorMessage = `Ошибка сервера: ${response.status} ${response.statusText}`;
-      }
-    } catch (parseError) {
-      console.error('Error parsing error response:', {
-        error: parseError,
-        status: response.status,
-        statusText: response.statusText,
-        url: response.url
-      });
-      errorMessage = `Ошибка сервера: ${response.status} ${response.statusText}`;
-    }
-    
-    const error = new Error(errorMessage);
-    error.response = response;
-    error.data = errorData;
-    throw error;
-  }
-  
-  try {
-    return await response.json();
-  } catch (parseError) {
-    console.error('Error parsing success response:', {
-      error: parseError,
-      status: response.status,
-      statusText: response.statusText,
-      url: response.url
-    });
-    throw new Error('Ошибка при обработке ответа сервера');
-  }
-};
-
-// Функция для получения конфигурации с токеном
-const getConfig = (method = 'GET', body = null) => {
-  const token = localStorage.getItem('token');
-  console.log('getConfig - Token:', token);
-  
-  const config = {
-    method,
-    headers: {
-      'Content-Type': 'application/json'
-    }
-  };
-
-  if (body) {
-    config.body = JSON.stringify(body);
-  }
-
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-    console.log('getConfig - Headers:', config.headers);
-  } else {
-    config.credentials = 'include';
-    console.log('getConfig - No token, using credentials:include');
-  }
-
-  console.log('getConfig - Final config:', config);
-  return config;
-};
-
-// Создаем объект api со всеми методами
 const api = {
   // Методы для работы с меню
-  getAllDishes: async () => {
-    try {
-      console.log('Getting dishes from server...');
-      const token = localStorage.getItem('token');
-      console.log('Using token:', token ? 'Present' : 'Missing');
-      
-      const config = {
-        ...axiosConfig(),
-        timeout: 10000,
-        validateStatus: function (status) {
-          return status >= 200 && status < 300;
+  menu: {
+    getDishes: () => axios.get('/menu/dishes'),
+    getWeeklyMenu: (groupId) => axios.get(`/menu/weekly/${groupId}`),
+    createMenuItem: (menuItem) => axios.post('/menu/weekly', menuItem),
+    updateMenuItem: (id, menuItem) => axios.put(`/menu/weekly/${id}`, menuItem),
+    deleteMenuItem: (id) => axios.delete(`/menu/weekly/${id}`),
+    deleteWeeklyMenu: (groupId, weekNumber) => axios.delete(`/menu/weekly/group/${groupId}/week/${weekNumber}`),
+    createDish: (dish) => axios.post('/menu/dishes', dish),
+    updateDish: (id, dish) => axios.put(`/menu/dishes/${id}`, dish),
+    deleteDish: (id) => axios.delete(`/menu/dishes/${id}`),
+    updateMeal: (groupId, meal) => axios.put(`/menu/${groupId}/meal/${meal.id}`, meal),
+    addMeal: (groupId, meal) => axios.post(`/menu/${groupId}/meal`, meal),
+    saveWeeklyMenu: async (groupId, week, menuData) => {
+      const menu_id = week === 'current' ? 1 : 2;
+      await axios.delete(`/menu/weekly/${groupId}/${menu_id}`);
+      return axios.post('/menu/weekly/save', { menuItems: menuData });
+    }
+  },
+
+  // Методы для работы с расписанием
+  schedule: {
+    getAll: () => axios.get('/schedule/all'),
+    getByGroup: async (groupId) => {
+      const response = await axios.get(`/schedule/group/${groupId}`);
+      return response.data;
+    },
+    create: (scheduleData) => axios.post('/schedule', scheduleData),
+    update: (id, scheduleData) => axios.put(`/schedule/${id}`, scheduleData),
+    delete: (id) => axios.delete(`/schedule/${id}`),
+    saveGroupSchedule: (groupId, scheduleData) => axios.put(`/schedule/group/${groupId}`, scheduleData)
+  },
+
+  // Методы для работы с прогрессом
+  progress: {
+    get: async (childId) => {
+      try {
+        // Преобразуем ID в число
+        const numericId = Number(childId);
+        if (isNaN(numericId)) {
+          throw new Error('Некорректный ID ребенка');
         }
-      };
-      
-      console.log('Request config:', {
-        headers: config.headers,
-        baseURL: API_BASE_URL,
-        url: '/menu/dishes',
-        timeout: config.timeout
-      });
-
-      const response = await axios.get(`${API_BASE_URL}/menu/dishes`, config);
-      
-      console.log('Server response:', {
-        status: response.status,
-        data: response.data
-      });
-      
-      if (!response.data) {
-        throw new Error('Нет данных от сервера');
-      }
-
-      if (!Array.isArray(response.data)) {
-        console.error('Unexpected response format:', response.data);
-        throw new Error('Некорректный формат данных от сервера');
-      }
-      
-      return response.data.map(dish => ({
-        id: dish.id,
-        name: dish.name,
-        category: dish.category,
-        default_weight: dish.default_weight
-      }));
-    } catch (error) {
-      console.error('Error in getAllDishes:', {
-        message: error.message,
-        response: error.response?.data,
-        status: error.response?.status
-      });
-      
-      if (error.response?.status === 401) {
-        throw new Error('Необходима авторизация');
-      }
-      
-      throw handleApiError(error);
-    }
-  },
-
-  getWeeklyMenu: async (groupId) => {
-    try {
-      const response = await axios.get(`${API_BASE_URL}/menu/weekly/${groupId}`, axiosConfig());
-      return response.data;
-    } catch (error) {
-      throw handleApiError(error);
-    }
-  },
-
-  createWeeklyMenuItem: async (weeklyMenuItem) => {
-    try {
-      const response = await axios.post(`${API_BASE_URL}/menu/weekly`, weeklyMenuItem, axiosConfig());
-      return response.data;
-    } catch (error) {
-      throw handleApiError(error);
-    }
-  },
-
-  updateWeeklyMenuItem: async (id, weeklyMenuItem) => {
-    try {
-      const response = await axios.put(`${API_BASE_URL}/menu/weekly/${id}`, weeklyMenuItem, axiosConfig());
-      return response.data;
-    } catch (error) {
-      throw handleApiError(error);
-    }
-  },
-
-  deleteWeeklyMenuItem: async (id) => {
-    try {
-      const response = await axios.delete(`${API_BASE_URL}/menu/weekly/${id}`, axiosConfig());
-      return response.data;
-    } catch (error) {
-      throw handleApiError(error);
-    }
-  },
-
-  updateMeal: async (groupId, meal) => {
-    try {
-      const response = await axios.put(`${API_BASE_URL}/menu/${groupId}/meal/${meal.id}`, meal, axiosConfig());
-      return response.data;
-    } catch (error) {
-      throw handleApiError(error);
-    }
-  },
-
-  addMeal: async (groupId, meal) => {
-    try {
-      const response = await axios.post(`${API_BASE_URL}/menu/${groupId}/meal`, meal, axiosConfig());
-      return response.data;
-    } catch (error) {
-      throw handleApiError(error);
-    }
-  },
-
-  getTeacherGroups: async (teacherId) => {
-    try {
-      const response = await axios.get(`${API_BASE_URL}/teachers/${teacherId}/groups`, axiosConfig());
-      return response.data;
-    } catch (error) {
-      throw new Error(error.response?.data?.message || 'Ошибка при загрузке групп учителя');
-    }
-  },
-
-  getParentChildGroup: async (parentId) => {
-    try {
-      const response = await axios.get(`${API_BASE_URL}/parents/${parentId}/child-group`, axiosConfig());
-      return response.data;
-    } catch (error) {
-      throw new Error(error.response?.data?.message || 'Ошибка при загрузке группы ребенка');
-    }
-  },
-
-  // API для аутентификации
-  register: async (userData) => {
-    const response = await fetch(`${API_BASE_URL}/auth/register`, getConfig('POST', userData));
-    const data = await handleResponse(response);
-    if (data.token) {
-      localStorage.setItem('token', data.token);
-    }
-    return data;
-  },
-
-  login: async (credentials) => {
-    const response = await fetch(`${API_BASE_URL}/auth/login`, getConfig('POST', credentials));
-    const data = await handleResponse(response);
-    if (data.token) {
-      localStorage.setItem('token', data.token);
-    }
-    return data;
-  },
-
-  logout: () => {
-    localStorage.removeItem('token');
-  },
-
-  getCurrentUser: async () => {
-    const response = await fetch(`${API_BASE_URL}/auth/me`, getConfig());
-    return handleResponse(response);
-  },
-
-  // API для работы с расписанием
-  getSchedule: async (groupId) => {
-    if (!groupId) {
-      console.error('getSchedule - No groupId provided');
-      return [];
-    }
-    
-    console.log('getSchedule - Starting request for group:', groupId);
-    const config = getConfig();
-    console.log('getSchedule - Request config:', config);
-    
-    try {
-      const response = await fetch(`${API_BASE_URL}/schedule/${encodeURIComponent(groupId)}`, config);
-      console.log('getSchedule - Response status:', response.status);
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('getSchedule - Error response:', errorText);
-        throw new Error(`Ошибка при получении расписания: ${response.status} ${response.statusText}`);
-      }
-      
-      const data = await response.json();
-      console.log('getSchedule - Success response:', data);
-      return data;
-    } catch (error) {
-      console.error('getSchedule - Fetch error:', error);
-      throw error;
-    }
-  },
-
-  getScheduleByGroup: async (groupName) => {
-    if (!groupName) {
-      console.error('getScheduleByGroup - No group name provided');
-      return [];
-    }
-    
-    console.log('getScheduleByGroup - Starting request for group:', groupName);
-    const config = getConfig();
-    
-    try {
-      const response = await fetch(`${API_BASE_URL}/schedule/group/${encodeURIComponent(groupName)}`, config);
-      console.log('getScheduleByGroup - Response status:', response.status);
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('getScheduleByGroup - Error response:', errorText);
-        throw new Error(`Ошибка при получении расписания: ${response.status} ${response.statusText}`);
-      }
-      
-      const data = await response.json();
-      console.log('getScheduleByGroup - Success response:', data);
-      return data;
-    } catch (error) {
-      console.error('getScheduleByGroup - Fetch error:', error);
-      throw error;
-    }
-  },
-  
-  updateScheduleItem: async (id, data) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/schedule/${id}`, getConfig('PUT', data));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error updating schedule:', error);
-      throw error;
-    }
-  },
-  
-  createScheduleItem: async (data) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/schedule`, getConfig('POST', data));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error creating schedule:', error);
-      throw error;
-    }
-  },
-  
-  deleteScheduleItem: async (id) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/schedule/${id}`, getConfig('DELETE'));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error deleting schedule:', error);
-      throw error;
-    }
-  },
-
-  getAllSchedules: async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/schedule/all`, getConfig());
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error fetching all schedules:', error);
-      throw error;
-    }
-  },
-
-  // API для работы с группами
-  getGroups: async () => {
-    try {
-      const response = await axios.get(`${API_BASE_URL}/groups`, axiosConfig());
-      
-      // Преобразуем данные, добавляя правильные поля
-      const groups = response.data.map(group => ({
-        id: group.group_id,
-        group_id: group.group_id,
-        group_name: group.group_name,
-        name: group.group_name,
-        age_range: group.age_range,
-        caretaker_full_name: group.caretaker_full_name,
-        description: group.description || '',
-        children_count: group.children_count || 0
-      }));
-
-      return groups;
-    } catch (error) {
-      console.error('Error fetching groups:', error);
-      throw new Error(error.response?.data?.message || 'Ошибка при загрузке групп');
-    }
-  },
-  
-  createGroup: async (data) => {
-    const response = await fetch(`${API_BASE_URL}/groups`, getConfig('POST', data));
-    return handleResponse(response);
-  },
-  
-  updateGroup: async (id, data) => {
-    try {
-      console.log('Updating group with data:', data);
-      const response = await fetch(`${API_BASE_URL}/groups/${id}`, getConfig('PUT', data));
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Error updating group:', {
-          status: response.status,
-          statusText: response.statusText,
-          data: errorData
+        
+        console.log('API: Запрос прогресса ребенка:', {
+          childId,
+          numericId,
+          type: typeof numericId
         });
-        throw new Error(errorData.message || 'Ошибка при обновлении группы');
-      }
-      
-      return await response.json();
-    } catch (error) {
-      console.error('Error in updateGroup:', error);
-      throw error;
-    }
-  },
-  
-  deleteGroup: async (id) => {
-    const response = await fetch(`${API_BASE_URL}/groups/${id}`, getConfig('DELETE'));
-    return handleResponse(response);
-  },
-
-  // API для работы с детьми
-  getAllChildren: async (groupId = null) => {
-    try {
-      console.log('Получение списка всех детей, параметр groupId:', groupId);
-      
-      let url = groupId 
-        ? `${API_BASE_URL}/children?groupId=${groupId}`
-        : `${API_BASE_URL}/children`;
-      
-      try {
-        // Пробуем основной эндпоинт
-        let response = await fetch(url, getConfig());
         
-        if (response.ok) {
-          return handleResponse(response);
-        }
+        const response = await axios.get(`/progress/child/${numericId}`);
+        console.log('API: Ответ с прогрессом:', {
+          status: response.status,
+          data: response.data
+        });
         
-        // Пробуем альтернативный эндпоинт, если первый не сработал
-        if (groupId) {
-          console.log('Пробуем альтернативный эндпоинт для получения детей группы...');
-          const altResponse = await fetch(`${API_BASE_URL}/groups/${groupId}/children`, getConfig());
-          
-          if (altResponse.ok) {
-            return handleResponse(altResponse);
-          }
-        }
-        
-        // Если не удалось получить детей через API, бросаем исключение с информативным сообщением
-        if (groupId) {
-          throw new Error(`Не удалось получить детей для группы с ID: ${groupId}`);
-        } else {
-          throw new Error('Не удалось получить список всех детей');
-        }
-      } catch (innerError) {
-        console.error('Внутренняя ошибка при получении детей:', innerError);
-        throw innerError;
-      }
-    } catch (error) {
-      console.error('Error fetching children:', error);
-      throw error;
-    }
-  },
-
-  getChildById: async (id) => {
-    try {
-      if (!id) {
-        throw new Error('ID ребенка не указан');
-      }
-      
-      console.log(`Получение данных о ребенке ${id}...`);
-      
-      try {
-        // Пробуем основной эндпоинт
-        const response = await fetch(`${API_BASE_URL}/children/${id}`, getConfig());
-        
-        if (response.ok) {
-          return handleResponse(response);
-        }
-        
-        // Пробуем альтернативный эндпоинт, если первый не сработал
-        console.log('Пробуем альтернативный эндпоинт для получения данных ребенка...');
-        const altResponse = await fetch(`${API_BASE_URL}/child/${id}`, getConfig());
-        
-        if (altResponse.ok) {
-          return handleResponse(altResponse);
-        }
-        
-        // Если ни один из эндпоинтов не доступен, бросаем исключение
-        throw new Error(`Не удалось получить данные ребенка с ID: ${id}`);
-      } catch (innerError) {
-        console.error('Внутренняя ошибка при получении данных ребенка:', innerError);
-        throw innerError;
-      }
-    } catch (error) {
-      console.error('Error fetching child:', error);
-      throw error;
-    }
-  },
-
-  createChild: async (data) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/children`, getConfig('POST', data));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error creating child:', error);
-      throw error;
-    }
-  },
-
-  updateChild: async (id, data) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/children/${id}`, getConfig('PUT', data));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error updating child:', error);
-      throw error;
-    }
-  },
-
-  deleteChild: async (id) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/children/${id}`, getConfig('DELETE'));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error deleting child:', error);
-      throw error;
-    }
-  },
-
-  // API для работы с контактами
-  getContactInfo: async () => {
-    try {
-      const response = await axios.get(`${API_BASE_URL}/contacts`, axiosConfig());
-      return response.data;
-    } catch (error) {
-      console.error('Error fetching contact info:', error);
-      throw error;
-    }
-  },
-
-  getStaff: async () => {
-    try {
-      const response = await axios.get(`${API_BASE_URL}/contacts/staff`, axiosConfig());
-      return response.data;
-    } catch (error) {
-      console.error('Error fetching staff:', error);
-      // В случае ошибки авторизации возвращаем defaultStaff
-      if (error.response?.status === 401) {
-        return [];
-      }
-      throw error;
-    }
-  },
-
-  // Методы для работы с рекомендациями
-  getRecommendations: async () => {
-    let retryCount = 0;
-    const maxRetries = 3;
-    
-    while (retryCount < maxRetries) {
-      try {
-        console.log(`Starting getRecommendations request (attempt ${retryCount + 1}/${maxRetries})...`);
-        const response = await fetch(`${API_BASE_URL}/recommendations`, getConfig());
-        console.log('getRecommendations response:', response);
-        
-        if (!response.ok) {
-          let errorMessage = 'Ошибка при получении рекомендаций';
-          let errorData = null;
-          
-          try {
-            errorData = await response.json();
-            console.error('getRecommendations error:', {
-              status: response.status,
-              statusText: response.statusText,
-              data: errorData,
-              url: response.url
-            });
-            
-            if (response.status === 500) {
-              errorMessage = 'Внутренняя ошибка сервера при получении рекомендаций';
-              if (errorData?.message) {
-                errorMessage += `: ${errorData.message}`;
-              }
-            } else if (errorData?.message) {
-              errorMessage = errorData.message;
-            }
-          } catch (parseError) {
-            console.error('Error parsing error response:', parseError);
-            errorMessage = `Ошибка сервера: ${response.status} ${response.statusText}`;
-          }
-          
-          if (response.status === 500 && retryCount < maxRetries - 1) {
-            retryCount++;
-            console.log(`Retrying after error (attempt ${retryCount}/${maxRetries})...`);
-            await new Promise(resolve => setTimeout(resolve, 1000 * retryCount)); // Увеличивающаяся задержка
-            continue;
-          }
-          
-          throw new Error(errorMessage);
-        }
-        
-        const data = await response.json();
-        console.log('getRecommendations success:', data);
-        return data;
+        return response;
       } catch (error) {
-        console.error('getRecommendations catch error:', error);
-        if (error.message.includes('Failed to fetch')) {
-          if (retryCount < maxRetries - 1) {
-            retryCount++;
-            console.log(`Retrying after network error (attempt ${retryCount}/${maxRetries})...`);
-            await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
-            continue;
-          }
-          throw new Error('Не удалось подключиться к серверу');
+        console.error('API: Ошибка при получении прогресса:', {
+          message: error.message,
+          response: error.response?.data,
+          status: error.response?.status
+        });
+        throw error;
+      }
+    },
+    
+    getById: async (progressId) => {
+      try {
+        const numericId = Number(progressId);
+        if (isNaN(numericId)) {
+          throw new Error('Некорректный ID прогресса');
         }
+        
+        console.log('API: Запрос прогресса по ID:', {
+          progressId,
+          numericId,
+          type: typeof numericId
+        });
+        
+        const response = await axios.get(`/progress/${numericId}`);
+        return response;
+      } catch (error) {
+        console.error('API: Ошибка при получении прогресса по ID:', error);
+        throw error;
+      }
+    },
+    
+    getGroupProgress: async (groupId) => {
+      try {
+        const numericId = Number(groupId);
+        if (isNaN(numericId)) {
+          throw new Error('Некорректный ID группы');
+        }
+        
+        console.log('API: Запрос прогресса группы:', {
+          groupId,
+          numericId,
+          type: typeof numericId
+        });
+        
+        const response = await axios.get(`/progress/group/${numericId}`);
+        return response;
+      } catch (error) {
+        console.error('API: Ошибка при получении прогресса группы:', error);
+        throw error;
+      }
+    },
+    
+    create: async (progressData) => {
+      try {
+        // Проверяем и преобразуем ID ребенка
+        if (progressData.child_id) {
+          progressData.child_id = Number(progressData.child_id);
+          if (isNaN(progressData.child_id)) {
+            throw new Error('Некорректный ID ребенка');
+          }
+        }
+        
+        console.log('API: Создание прогресса:', progressData);
+        const response = await axios.post('/progress', progressData);
+        return response;
+      } catch (error) {
+        console.error('API: Ошибка при создании прогресса:', error);
+        throw error;
+      }
+    },
+    
+    update: async (progressId, progressData) => {
+      try {
+        const numericId = Number(progressId);
+        if (isNaN(numericId)) {
+          throw new Error('Некорректный ID прогресса');
+        }
+        
+        // Проверяем и преобразуем ID ребенка
+        if (progressData.child_id) {
+          progressData.child_id = Number(progressData.child_id);
+          if (isNaN(progressData.child_id)) {
+            throw new Error('Некорректный ID ребенка');
+          }
+        }
+        
+        console.log('API: Обновление прогресса:', {
+          progressId: numericId,
+          data: progressData
+        });
+        
+        const response = await axios.put(`/progress/${numericId}`, progressData);
+        return response;
+      } catch (error) {
+        console.error('API: Ошибка при обновлении прогресса:', error);
+        throw error;
+      }
+    },
+    
+    delete: async (progressId) => {
+      try {
+        const numericId = Number(progressId);
+        if (isNaN(numericId)) {
+          throw new Error('Некорректный ID прогресса');
+        }
+        
+        console.log('API: Удаление прогресса:', numericId);
+        const response = await axios.delete(`/progress/${numericId}`);
+        return response;
+      } catch (error) {
+        console.error('API: Ошибка при удалении прогресса:', error);
+        throw error;
+      }
+    },
+    
+    saveStructure: async (structureData) => {
+      try {
+        console.log('API: Сохранение структуры прогресса:', structureData);
+        const response = await axios.post('/progress/structure', structureData);
+        return response;
+      } catch (error) {
+        console.error('API: Ошибка при сохранении структуры прогресса:', error);
         throw error;
       }
     }
   },
 
-  createRecommendation: async (recommendationData) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/recommendations`, getConfig('POST', recommendationData));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error creating recommendation:', error);
-      throw error;
-    }
-  },
-
-  updateRecommendation: async (recommendationId, recommendationData) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/recommendations/${recommendationId}`, getConfig('PUT', recommendationData));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error updating recommendation:', error);
-      throw error;
-    }
-  },
-
-  deleteRecommendation: async (recommendationId) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/recommendations/${recommendationId}`, getConfig('DELETE'));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error deleting recommendation:', error);
-      throw error;
-    }
-  },
-
-  sendRecommendation: async (recommendationId) => {
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/recommendations/${recommendationId}/send`,
-        getConfig('POST')
-      );
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error sending recommendation:', error);
-      throw error;
-    }
-  },
-
-  // Методы для работы с услугами
-  getServices: async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/services`, getConfig());
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error fetching services:', error);
-      throw error;
-    }
-  },
-
-  // Методы для работы с пользователями
-  getUsers: async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/users`, getConfig());
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error fetching users:', error);
-      throw error;
-    }
-  },
-
-  // Метод для получения прогресса ребенка
-  getProgressByChildId: async (childId) => {
-    try {
-      if (!childId) {
-        throw new Error('ID ребенка не указан');
+  // Методы для работы с аутентификацией
+  auth: {
+    register: async (userData) => {
+      const response = await axios.post('/auth/register', userData);
+      if (response.token) {
+        localStorage.setItem(AUTH_CONFIG.tokenKey, response.token);
       }
-      
-      console.log(`Получение данных о прогрессе для ребенка ${childId}...`);
-      
-      const response = await fetch(`${API_BASE_URL}/progress/child/${childId}`, getConfig());
-      
-      if (!response.ok) {
-        throw new Error(`Ошибка при получении прогресса: ${response.statusText}`);
+      return response;
+    },
+    
+    login: async (credentials) => {
+      const response = await axios.post('/auth/login', credentials);
+      if (response.token) {
+        localStorage.setItem(AUTH_CONFIG.tokenKey, response.token);
       }
-      
-      const data = await response.json();
-      
-      // Проверяем и форматируем данные
-      if (!data || !data.progress) {
-        throw new Error('Некорректный формат данных прогресса');
+      return response;
+    },
+    
+    logout: () => {
+      localStorage.removeItem(AUTH_CONFIG.tokenKey);
+    },
+    
+    getCurrentUser: () => axios.get('/auth/me')
+  },
+
+  // Методы для работы с группами
+  groups: {
+    getAll: async () => {
+      try {
+        console.log('API: Запрос списка групп');
+        
+        const response = await axios.get('/groups');
+        
+        // Преобразуем все ID в строки в ответе
+        if (response.data) {
+          response.data = response.data.map(group => ({
+            ...group,
+            id: String(group.id || group.group_id),
+            group_id: String(group.id || group.group_id),
+            teacher_id: Array.isArray(group.teacher_id) ? 
+              group.teacher_id.map(String) : 
+              group.teacher_id ? [String(group.teacher_id)] : []
+          }));
+        }
+        
+        console.log('API: Ответ со списком групп:', {
+          status: response.status,
+          data: response.data
+        });
+        
+        return response;
+      } catch (error) {
+        console.error('API: Ошибка при получении списка групп:', {
+          message: error.message,
+          response: error.response?.data,
+          status: error.response?.status
+        });
+        throw error;
       }
-      
-      // Форматируем числовые значения
-      const formattedProgress = data.progress.map(p => ({
-        ...p,
-        report_date: new Date(p.report_date),
-        active_speech: p.active_speech ? parseInt(p.active_speech) : null,
-        games: p.games ? parseInt(p.games) : null,
-        art_activity: p.art_activity ? parseInt(p.art_activity) : null,
-        constructive_activity: p.constructive_activity ? parseInt(p.constructive_activity) : null,
-        sensory_development: p.sensory_development ? parseInt(p.sensory_development) : null,
-        movement_skills: p.movement_skills ? parseInt(p.movement_skills) : null,
-        naming_skills: p.naming_skills ? parseInt(p.naming_skills) : null,
-        height_cm: p.height_cm ? parseInt(p.height_cm) : null,
-        weight_kg: p.weight_kg ? parseInt(p.weight_kg) : null
-      }));
-      
-      return {
-        child: data.child,
-        progress: formattedProgress
-      };
-    } catch (error) {
-      console.error('Ошибка при получении прогресса ребенка:', error);
-      throw error;
+    },
+    
+    create: async (groupData) => {
+      try {
+        // Преобразуем ID учителей в числа
+        if (groupData.teacher_id) {
+          if (Array.isArray(groupData.teacher_id)) {
+            groupData.teacher_id = groupData.teacher_id.map(id => {
+              const numericId = Number(id);
+              if (isNaN(numericId)) {
+                throw new Error('Некорректный ID учителя');
+              }
+              return numericId;
+            });
+          } else {
+            const numericId = Number(groupData.teacher_id);
+            if (isNaN(numericId)) {
+              throw new Error('Некорректный ID учителя');
+            }
+            groupData.teacher_id = [numericId];
+          }
+        }
+        
+        console.log('API: Создание группы:', groupData);
+        
+        const response = await axios.post('/groups', groupData);
+        
+        // Преобразуем все ID в строки в ответе
+        if (response.data) {
+          response.data = {
+            ...response.data,
+            id: String(response.data.id || response.data.group_id),
+            group_id: String(response.data.id || response.data.group_id),
+            teacher_id: Array.isArray(response.data.teacher_id) ? 
+              response.data.teacher_id.map(String) : 
+              response.data.teacher_id ? [String(response.data.teacher_id)] : []
+          };
+        }
+        
+        return response;
+      } catch (error) {
+        console.error('API: Ошибка при создании группы:', error);
+        throw error;
+      }
+    },
+    
+    update: async (groupId, groupData) => {
+      try {
+        const numericId = Number(groupId);
+        if (isNaN(numericId)) {
+          throw new Error('Некорректный ID группы');
+        }
+        
+        // Преобразуем ID учителей в числа
+        if (groupData.teacher_id) {
+          if (Array.isArray(groupData.teacher_id)) {
+            groupData.teacher_id = groupData.teacher_id.map(id => {
+              const numericTeacherId = Number(id);
+              if (isNaN(numericTeacherId)) {
+                throw new Error('Некорректный ID учителя');
+              }
+              return numericTeacherId;
+            });
+          } else {
+            const numericTeacherId = Number(groupData.teacher_id);
+            if (isNaN(numericTeacherId)) {
+              throw new Error('Некорректный ID учителя');
+            }
+            groupData.teacher_id = [numericTeacherId];
+          }
+        }
+        
+        console.log('API: Обновление группы:', {
+          groupId: numericId,
+          data: groupData
+        });
+        
+        const response = await axios.put(`/groups/${numericId}`, groupData);
+        
+        // Преобразуем все ID в строки в ответе
+        if (response.data) {
+          response.data = {
+            ...response.data,
+            id: String(response.data.id || response.data.group_id),
+            group_id: String(response.data.id || response.data.group_id),
+            teacher_id: Array.isArray(response.data.teacher_id) ? 
+              response.data.teacher_id.map(String) : 
+              response.data.teacher_id ? [String(response.data.teacher_id)] : []
+          };
+        }
+        
+        return response;
+      } catch (error) {
+        console.error('API: Ошибка при обновлении группы:', error);
+        throw error;
+      }
+    },
+    
+    delete: async (groupId) => {
+      try {
+        const numericId = Number(groupId);
+        if (isNaN(numericId)) {
+          throw new Error('Некорректный ID группы');
+        }
+        
+        console.log('API: Удаление группы:', {
+          groupId,
+          numericId,
+          type: typeof numericId
+        });
+        
+        const response = await axios.delete(`/groups/${numericId}`);
+        return response;
+      } catch (error) {
+        console.error('API: Ошибка при удалении группы:', error);
+        throw error;
+      }
     }
   },
 
-  // Методы для работы с платными услугами
-  getPaidServices: async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/paid-services`, getConfig());
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error fetching paid services:', error);
-      throw error;
+  // Методы для работы с детьми
+  children: {
+    getAll: async (params = {}) => {
+      try {
+        // Если есть parent_id в параметрах, преобразуем его в число
+        if (params.parent_id) {
+          const numericParentId = Number(params.parent_id);
+          if (isNaN(numericParentId)) {
+            throw new Error('Некорректный ID родителя');
+          }
+          params.parent_id = numericParentId;
+        }
+        
+        // Если есть group_id в параметрах, преобразуем его в число
+        if (params.group_id) {
+          const numericGroupId = Number(params.group_id);
+          if (isNaN(numericGroupId)) {
+            throw new Error('Некорректный ID группы');
+          }
+          params.group_id = numericGroupId;
+        }
+        
+        console.log('API: Запрос списка детей:', {
+          params,
+          types: {
+            parent_id: typeof params.parent_id,
+            group_id: typeof params.group_id
+          }
+        });
+        
+        const response = await axios.get('/children', { params });
+        
+        // Преобразуем все ID в строки в ответе
+        if (response.data) {
+          response.data = response.data.map(child => ({
+            ...child,
+            id: String(child.id || child.child_id),
+            child_id: String(child.id || child.child_id),
+            parent_id: String(child.parent_id),
+            group_id: child.group_id ? String(child.group_id) : null
+          }));
+        }
+        
+        console.log('API: Ответ со списком детей:', {
+          status: response.status,
+          data: response.data
+        });
+        
+        return response;
+      } catch (error) {
+        console.error('API: Ошибка при получении списка детей:', {
+          message: error.message,
+          response: error.response?.data,
+          status: error.response?.status
+        });
+        throw error;
+      }
+    },
+    
+    getById: async (childId) => {
+      try {
+        const numericId = Number(childId);
+        if (isNaN(numericId)) {
+          throw new Error('Некорректный ID ребенка');
+        }
+        
+        console.log('API: Запрос данных ребенка:', {
+          childId,
+          numericId,
+          type: typeof numericId
+        });
+        
+        const response = await axios.get(`/children/${numericId}`);
+        
+        // Преобразуем все ID в строки в ответе
+        if (response.data) {
+          response.data = {
+            ...response.data,
+            id: String(response.data.id || response.data.child_id),
+            child_id: String(response.data.id || response.data.child_id),
+            parent_id: String(response.data.parent_id),
+            group_id: response.data.group_id ? String(response.data.group_id) : null
+          };
+        }
+        
+        return response;
+      } catch (error) {
+        console.error('API: Ошибка при получении данных ребенка:', error);
+        throw error;
+      }
+    },
+    
+    create: async (data) => {
+      try {
+        // Преобразуем ID родителя и группы в числа
+        if (data.parent_id) {
+          data.parent_id = Number(data.parent_id);
+          if (isNaN(data.parent_id)) {
+            throw new Error('Некорректный ID родителя');
+          }
+        }
+        
+        if (data.group_id) {
+          data.group_id = Number(data.group_id);
+          if (isNaN(data.group_id)) {
+            throw new Error('Некорректный ID группы');
+          }
+        }
+        
+        console.log('API: Создание ребенка, данные:', {
+          ...data,
+          parent_id: data.parent_id,
+          group_id: data.group_id
+        });
+        
+        const response = await axios.post('/children', data, {
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        // Преобразуем все ID в строки в ответе
+        if (response.data) {
+          response.data = {
+            ...response.data,
+            id: String(response.data.id || response.data.child_id),
+            child_id: String(response.data.id || response.data.child_id),
+            parent_id: String(response.data.parent_id),
+            group_id: response.data.group_id ? String(response.data.group_id) : null
+          };
+        }
+        
+        console.log('API: Успешный ответ:', response.data);
+        return response;
+      } catch (error) {
+        console.error('API: Ошибка при создании ребенка:', {
+          message: error.message,
+          response: error.response?.data,
+          status: error.response?.status,
+          data: error.config?.data
+        });
+        throw error;
+      }
+    },
+    
+    update: async (id, data) => {
+      try {
+        // Преобразуем ID в число
+        const numericId = Number(id);
+        if (isNaN(numericId)) {
+          throw new Error('Некорректный ID ребенка');
+        }
+
+        // Преобразуем ID родителя и группы в числа
+        if (data.parent_id) {
+          data.parent_id = Number(data.parent_id);
+          if (isNaN(data.parent_id)) {
+            throw new Error('Некорректный ID родителя');
+          }
+        }
+        
+        if (data.group_id) {
+          data.group_id = Number(data.group_id);
+          if (isNaN(data.group_id)) {
+            throw new Error('Некорректный ID группы');
+          }
+        }
+
+        // Подготавливаем данные для отправки
+        const requestData = {
+          ...data,
+          // Проверяем, что allergies в правильном формате
+          allergies: typeof data.allergies === 'string' && data.allergies.startsWith('{') ? 
+                    data.allergies : 
+                    Array.isArray(data.allergies) ? 
+                    `{${data.allergies.map(a => `"${a}"`).join(',')}}` : 
+                    '{}',
+          // Отправляем services как массив чисел
+          services: Array.isArray(data.services) ? data.services.map(Number) : []
+        };
+
+        console.log('API: Обновление ребенка:', {
+          id: numericId,
+          data: requestData,
+          types: {
+            id: typeof numericId,
+            parent_id: typeof requestData.parent_id,
+            group_id: typeof requestData.group_id
+          }
+        });
+
+        const response = await axios.put(`/children/${numericId}`, requestData, {
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        // Преобразуем все ID в строки в ответе
+        if (response.data) {
+          response.data = {
+            ...response.data,
+            id: String(response.data.id || response.data.child_id),
+            child_id: String(response.data.id || response.data.child_id),
+            parent_id: String(response.data.parent_id),
+            group_id: response.data.group_id ? String(response.data.group_id) : null
+          };
+        }
+        
+        console.log('API: Успешный ответ:', response.data);
+        return response;
+      } catch (error) {
+        console.error('API: Ошибка при обновлении ребенка:', {
+          message: error.message,
+          response: error.response?.data,
+          status: error.response?.status,
+          data: error.config?.data
+        });
+        throw error;
+      }
+    },
+    
+    delete: async (id) => {
+      try {
+        const numericId = Number(id);
+        if (isNaN(numericId)) {
+          throw new Error('Некорректный ID ребенка');
+        }
+        
+        console.log('API: Удаление ребенка:', {
+          id,
+          numericId,
+          type: typeof numericId
+        });
+        
+        const response = await axios.delete(`/children/${numericId}`);
+        console.log('API: Ответ сервера при удалении:', response.data);
+        return response.data;
+      } catch (error) {
+        console.error('API: Ошибка при удалении ребенка:', {
+          message: error.message,
+          response: error.response?.data,
+          status: error.response?.status
+        });
+        
+        // Преобразуем ошибку сервера в понятное пользователю сообщение
+        let errorMessage = 'Ошибка при удалении ребенка';
+        
+        if (error.response) {
+          switch (error.response.status) {
+            case 403:
+              errorMessage = 'У вас нет прав для удаления ребенка';
+              break;
+            case 404:
+              errorMessage = 'Ребенок не найден';
+              break;
+            case 400:
+              errorMessage = error.response.data.error || 'Некорректные данные';
+              break;
+            case 500:
+              errorMessage = 'Ошибка сервера при удалении ребенка';
+              break;
+          }
+        }
+        
+        throw new Error(errorMessage);
+      }
     }
   },
 
   // Методы для работы с посещаемостью
-  getAttendance: async (serviceId, startDate, endDate) => {
-    try {
-      const params = new URLSearchParams({
-        startDate: startDate.toISOString(),
-        endDate: endDate.toISOString()
-      });
-      const response = await fetch(
-        `${API_BASE_URL}/attendance/paid-services/${serviceId}?${params}`,
-        getConfig()
-      );
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error fetching attendance:', error);
-      throw error;
-    }
+  attendance: {
+    get: (params) => axios.get('/attendance', { params }),
+    getGroupAttendance: (groupId, startDate, endDate) => 
+      axios.get('/attendance/group', { 
+        params: { 
+          group_id: String(groupId),
+          start_date: startDate,
+          end_date: endDate 
+        } 
+      }),
+    markAttendance: (data) => axios.post('/attendance', {
+      child_id: data.child_id,
+      date: data.date,
+      is_present: data.is_present
+    })
   },
 
-  updateAttendance: async (attendanceId, isPresent) => {
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/attendance/${attendanceId}`,
-        getConfig('PUT', { status: isPresent ? 'present' : 'absent' })
-      );
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error updating attendance:', error);
-      throw error;
-    }
+  // Методы для работы с услугами
+  services: {
+    getAll: () => axios.get('/services'),
+    create: (serviceData) => axios.post('/services', serviceData),
+    update: (serviceId, serviceData) => axios.put(`/services/${serviceId}`, serviceData),
+    delete: (serviceId) => axios.delete(`/services/${serviceId}`)
   },
 
-  // Методы для работы с меню
-  saveWeeklyMenu: async (groupId, week, menuData) => {
-    try {
-      console.log('Saving menu data:', { groupId, week, menuData });
-      const menu_id = week === 'current' ? 1 : 2;
-      
-      // Преобразуем данные меню в формат для сохранения
-      const menuItems = menuData.flatMap(dayMenu => {
-        return Object.entries(dayMenu)
-          .filter(([key]) => key !== 'day') // Исключаем поле day из обработки
-          .flatMap(([mealType, dishes]) => {
-            return dishes.map(dish => ({
-              menu_id,
-              group_id: groupId,
-              meal_day: dayMenu.day,
-              meal_type: mealType,
-              dish_id: dish.dish_id,
-              dish_name: dish.dish_name,
-              category: dish.category,
-              weight: dish.weight || 0,
-              group_name: dish.group_name
-            }));
-          });
-      });
-
-      console.log('Prepared menu items for saving:', menuItems);
-      
-      // Сначала удаляем существующие записи для этой группы и menu_id
-      await axios.delete(
-        `${API_BASE_URL}/menu/weekly/${groupId}/${menu_id}`,
-        axiosConfig()
-      );
-
-      // Затем сохраняем новые записи
-      const response = await axios.post(
-        `${API_BASE_URL}/menu/weekly/save`,
-        { menuItems },
-        axiosConfig()
-      );
-
-      console.log('Save menu response:', response.data);
-      return response.data;
-    } catch (error) {
-      console.error('Error saving menu:', error);
-      throw new Error(error.response?.data?.message || 'Ошибка при сохранении меню');
-    }
+  // Методы для работы с заявками на услуги
+  serviceRequests: {
+    getAll: () => axios.get('/services/requests'),
+    create: (requestData) => axios.post('/services/requests', requestData),
+    approve: (requestId) => axios.put(`/services/requests/${requestId}/approve`),
+    reject: (requestId) => axios.put(`/services/requests/${requestId}/reject`),
+    delete: (requestId) => axios.delete(`/services/requests/${requestId}`)
   },
 
-  // Методы для работы с обычной посещаемостью
-  getRegularAttendance: async (childId, startDate, endDate) => {
-    try {
-      const params = new URLSearchParams({
-        startDate: startDate.toISOString(),
-        endDate: endDate.toISOString()
-      });
-      const response = await fetch(
-        `${API_BASE_URL}/attendance/regular/${childId}?${params}`,
-        getConfig()
-      );
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error fetching regular attendance:', error);
-      throw error;
-    }
+  // Методы для работы с пользователями
+  users: {
+    getAll: () => axios.get('/users', { 
+      params: { 
+        include_children: true 
+      } 
+    }),
+    getById: (userId) => axios.get(`/users/${userId}`),
+    create: (userData) => axios.post('/users', userData),
+    update: (userId, userData) => axios.put(`/users/${userId}`, userData),
+    delete: (userId) => axios.delete(`/users/${userId}`),
+    getParents: () => axios.get('/users/parents')
   },
 
-  updateRegularAttendance: async (childId, date, isPresent) => {
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/attendance/regular/${childId}`,
-        getConfig('PUT', { 
-          date: date.toISOString(),
-          status: isPresent ? 'present' : 'absent' 
-        })
-      );
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error updating regular attendance:', error);
-      throw error;
-    }
+  // Методы для работы с персоналом
+  staff: {
+    getAll: () => axios.get('/staff'),
+    getById: (id) => axios.get(`/staff/${id}`),
+    create: (data) => axios.post('/staff', data),
+    update: (id, data) => axios.put(`/staff/${id}`, data),
+    delete: (id) => axios.delete(`/staff/${id}`)
   },
 
-  // Метод для получения детей в группе
-  getGroupChildren: async (groupId) => {
-    try {
-      if (!groupId) {
-        throw new Error('ID группы не указан');
-      }
-      
-      console.log(`Получение детей для группы ${groupId}...`);
-      
-      const response = await fetch(`${API_BASE_URL}/children?group_id=${groupId}`, getConfig());
-      
-      if (!response.ok) {
-        throw new Error(`Не удалось получить детей для группы с ID: ${groupId}`);
-      }
-      
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error fetching group children:', error);
-      throw error;
-    }
-  },
-
-  // Метод для получения ребенка по ID
-  getChild: async (childId) => {
-    return api.getChildById(childId);
-  },
-
-  // Методы для работы с расписанием
-  addSchedule: async (scheduleData) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/schedule`, getConfig('POST', scheduleData));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error adding schedule:', error);
-      throw error;
-    }
-  },
-
-  updateSchedule: async (scheduleId, scheduleData) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/schedule/${scheduleId}`, getConfig('PUT', scheduleData));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error updating schedule:', error);
-      throw error;
-    }
-  },
-
-  deleteSchedule: async (scheduleId) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/schedule/${scheduleId}`, getConfig('DELETE'));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error deleting schedule:', error);
-      throw error;
-    }
-  },
-
-  // Сохранение расписания группы
-  saveGroupSchedule: async (groupId, scheduleData) => {
-    try {
-      // Бэкенд для сохранения расписания не реализован в предоставленном коде.
-      // Этот метод - заглушка, предполагающая наличие /schedule/group/:groupId (PUT/POST)
-      console.warn('saveGroupSchedule - Backend endpoint not implemented. Simulating success.');
-      // const response = await fetch(`${API_BASE_URL}/schedule/group/${groupId}`, getConfig('PUT', scheduleData));
-      // return handleResponse(response);
-      return Promise.resolve({ success: true, message: 'Расписание (симулировано) сохранено' }); // Заглушка
-    } catch (error) {
-      console.error(`Error saving schedule for group ${groupId}:`, error);
-      throw error;
-    }
-  },
-
-  // Получение списка активностей
-  getActivities: async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/activities`, getConfig());
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error fetching activities:', error);
-      throw error;
-    }
-  },
-
-  // Метод для создания новой записи о прогрессе
-  createProgress: async (progressData) => {
-    const token = localStorage.getItem('token');
-    if (!token) {
-      throw new Error('Необходима авторизация');
-    }
-
-    try {
-      const response = await axios.post(`${API_BASE_URL}/progress`, progressData, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      return response.data;
-    } catch (error) {
-      console.error('Ошибка при создании прогресса:', error);
-      throw error;
-    }
-  },
-
-  // Метод для обновления записи о прогрессе
-  updateProgress: async (reportId, data) => {
-    const token = localStorage.getItem('token');
-    if (!token) {
-      throw new Error('Необходима авторизация');
-    }
-
-    try {
-      const response = await axios.put(`${API_BASE_URL}/progress/${reportId}`, data, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      return response.data;
-    } catch (error) {
-      console.error('Ошибка при обновлении прогресса:', error);
-      throw error;
-    }
-  },
-
-  // API для работы с заявками на услуги
-  getServiceRequests: async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/service-requests`, getConfig());
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error fetching service requests:', error);
-      throw error;
-    }
-  },
-
-  createServiceRequest: async (requestData) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/service-requests`, getConfig('POST', requestData));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error creating service request:', error);
-      throw error;
-    }
-  },
-
-  updateServiceRequest: async (requestId, requestData) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/service-requests/${requestId}`, getConfig('PUT', requestData));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error updating service request:', error);
-      throw error;
-    }
-  },
-
-  deleteServiceRequest: async (requestId) => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/service-requests/${requestId}`, getConfig('DELETE'));
-      return handleResponse(response);
-    } catch (error) {
-      console.error('Error deleting service request:', error);
-      throw error;
-    }
-  },
-
-  attendanceApi: {
-    // Получение посещаемости группы
-    getGroupAttendance: async (groupId, startDate, endDate) => {
+  // Методы для работы с рекомендациями
+  recommendations: {
+    getAll: async () => {
       try {
-        const response = await axios.get(
-          `${API_BASE_URL}/attendance/group/${groupId}`,
-          {
-            ...axiosConfig(),
-            params: { startDate, endDate }
-          }
-        );
+        const response = await axios.get('/recommendations');
+        console.log('API response for recommendations:', response);
         return response.data;
       } catch (error) {
-        console.error('Error in getGroupAttendance:', error);
-        throw new Error('Ошибка при получении данных посещаемости');
+        console.error('Error fetching recommendations:', error);
+        throw error;
+      }
+    },
+    getById: (id) => axios.get(`/recommendations/${id}`),
+    create: (data) => axios.post('/recommendations', data),
+    update: (id, data) => axios.put(`/recommendations/${id}`, data),
+    delete: (id) => axios.delete(`/recommendations/${id}`),
+    send: (id) => axios.post(`/recommendations/${id}/send`, {}, {
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    })
+  },
+
+  // Методы для работы с профилем пользователя
+  profile: {
+    get: async () => {
+      try {
+        // Получаем базовые данные пользователя
+        const response = await axios.get('/auth/me');
+        console.log('Ответ /auth/me:', response.data);
+        
+        let userData = response.data;
+        
+        // Пытаемся получить дополнительные данные через /users/me
+        try {
+          const detailsResponse = await axios.get('/users/me');
+          console.log('Ответ /users/me:', detailsResponse.data);
+          userData = {
+            ...userData,
+            ...detailsResponse.data,
+            // Сохраняем дату создания из auth/me, если она есть
+            created_at: response.data.created_at || response.data.created || response.data.date_created || detailsResponse.data.created_at
+          };
+        } catch (error) {
+          console.log('Не удалось получить дополнительные данные пользователя:', error);
+        }
+
+        return userData;
+      } catch (error) {
+        console.error('API: Ошибка при получении профиля:', error);
+        throw new Error('Ошибка при загрузке профиля');
       }
     },
 
-    // Отметка посещаемости
-    markAttendance: async (attendanceData) => {
+    update: async (userId, profileData) => {
       try {
-        const response = await axios.post(
-          `${API_BASE_URL}/attendance/mark`,
-          attendanceData,
-          {
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${localStorage.getItem('token')}`
-            }
-          }
-        );
-
+        const response = await axios.put(`/users/${userId}`, profileData);
         return response.data;
       } catch (error) {
-        console.error('Ошибка при отметке посещаемости:', error);
-        throw new Error(error.response?.data?.error || 'Ошибка при отметке посещаемости');
+        console.error('API: Ошибка при обновлении профиля:', error);
+        throw new Error('Ошибка при обновлении профиля');
       }
-    }
-  },
+    },
 
-  // Метод для получения списка детей группы
-  getGroupChildrenDetails: async (groupId) => {
-    try {
-      console.log('Request URL:', `${API_BASE_URL}/groups/${groupId}/children`);
-      
-      const response = await axios.get(`${API_BASE_URL}/groups/${groupId}/children`, axiosConfig());
-      console.log('Group children response:', response.data);
-      
-      // Проверяем, что ответ содержит необходимые данные
-      if (!response.data || !response.data.children) {
-        console.warn('Некорректный формат данных от сервера:', response.data);
-        // Возвращаем пустой массив детей, если данные отсутствуют
-        return {
-          group: { id: groupId, name: 'Группа', group_name: 'Группа' },
-          children: []
-        };
-      }
-      
-      return response.data;
-    } catch (error) {
-      console.error('Error fetching group children:', error);
-      
-      // Проверяем тип ошибки и возвращаем соответствующее сообщение
-      if (error.response) {
-        // Сервер вернул ошибку с кодом состояния
-        console.error('Server error response:', error.response.data);
-        throw new Error(error.response.data.message || 'Ошибка сервера при получении списка детей');
-      } else if (error.request) {
-        // Запрос был сделан, но ответ не получен
-        console.error('No response received:', error.request);
-        throw new Error('Нет ответа от сервера. Проверьте подключение к интернету.');
-      } else {
-        // Что-то пошло не так при настройке запроса
-        console.error('Request setup error:', error.message);
-        throw new Error('Ошибка при настройке запроса: ' + error.message);
-      }
-    }
-  },
-
-  getProgressById: async (reportId) => {
-    const token = localStorage.getItem('token');
-    if (!token) {
-      throw new Error('Необходима авторизация');
-    }
-
-    if (!reportId) {
-      throw new Error('ID отчета не указан');
-    }
-
-    try {
-      // Пробуем основной эндпоинт
+    uploadAvatar: async (userId, formData) => {
       try {
-        const response = await axios.get(`${API_BASE_URL}/progress/report/${reportId}`, {
-          headers: {
-            'Authorization': `Bearer ${token}`
+        console.log('API: Начало загрузки аватара:', {
+          userId,
+          formData: {
+            has_avatar: formData.has('avatar'),
+            content_type: formData.get('avatar')?.type
           }
         });
+
+        if (!formData.has('avatar')) {
+          throw new Error('Файл не выбран');
+        }
+
+        const file = formData.get('avatar');
+        if (!file || !(file instanceof File)) {
+          throw new Error('Некорректный файл');
+        }
+
+        // Проверка размера файла (например, максимум 5MB)
+        const maxSize = 5 * 1024 * 1024; // 5MB
+        if (file.size > maxSize) {
+          throw new Error('Файл слишком большой (максимум 5MB)');
+        }
+
+        // Проверка типа файла
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/gif'];
+        if (!allowedTypes.includes(file.type)) {
+          throw new Error('Неподдерживаемый формат файла. Разрешены только JPEG, PNG и GIF');
+        }
+
+        // Конвертируем файл в base64
+        const base64Data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.readAsDataURL(file);
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = error => reject(error);
+        });
+
+        // Отправляем данные как JSON
+        const response = await axios.post(`/users/${userId}/profile-photo`, {
+          photo: base64Data,
+          photo_mime_type: file.type
+        }, {
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+
+        console.log('API: Успешная загрузка аватара:', response.data);
         return response.data;
       } catch (error) {
-        if (error.response?.status === 404) {
-          // Пробуем альтернативный эндпоинт
-          const altResponse = await axios.get(`${API_BASE_URL}/progress/${reportId}/details`, {
-            headers: {
-              'Authorization': `Bearer ${token}`
-            }
-          });
-          return altResponse.data;
+        console.error('API: Ошибка при загрузке аватара:', {
+          message: error.message,
+          response: error.response?.data,
+          status: error.response?.status
+        });
+
+        // Если ошибка от сервера, прокидываем её дальше
+        if (error.response) {
+          throw error;
         }
-        throw error;
+
+        // Если локальная ошибка валидации, создаем объект ошибки в формате axios
+        throw {
+          response: {
+            data: { message: error.message },
+            status: 400
+          }
+        };
       }
-    } catch (error) {
-      console.error('Ошибка при получении прогресса:', error);
-      if (error.response?.status === 404) {
-        throw new Error(`Запись прогресса с ID ${reportId} не найдена`);
+    },
+
+    changePassword: async (userId, passwordData) => {
+      try {
+        const response = await axios.post(`/users/${userId}/change-password`, passwordData);
+        return response.data;
+      } catch (error) {
+        console.error('API: Ошибка при изменении пароля:', error);
+        throw new Error('Ошибка при изменении пароля');
       }
-      throw new Error(error.response?.data?.message || 'Ошибка при получении данных прогресса');
     }
-  }
+  },
 };
 
 // Экспортируем отдельные API для различных сущностей
-export const authApi = {
-  register: api.register,
-  login: api.login,
-  logout: api.logout,
-  getCurrentUser: api.getCurrentUser
-};
+export const authApi = api.auth;
+export const groupsApi = api.groups;
+export const childrenApi = api.children;
+export const scheduleApi = api.schedule;
+export const progressApi = api.progress;
+export const attendanceApi = api.attendance;
+export const servicesApi = api.services;
+export const serviceRequestsApi = api.serviceRequests;
+export const recommendationsApi = api.recommendations;
+export const menuApi = api.menu;
+export const profileApi = api.profile;
 
-export const groupsApi = {
-  getGroups: api.getGroups,
-  createGroup: api.createGroup,
-  updateGroup: api.updateGroup,
-  deleteGroup: api.deleteGroup,
-  getGroupChildren: api.getGroupChildren,
-  getGroupChildrenDetails: api.getGroupChildrenDetails
-};
-
-export const childrenApi = {
-  getAllChildren: api.getAllChildren,
-  getChild: api.getChildById,
-  createChild: api.createChild,
-  updateChild: api.updateChild,
-  deleteChild: api.deleteChild,
-  getGroupChildren: api.getGroupChildren
-};
-
-export const scheduleApi = {
-  getSchedule: api.getSchedule,
-  getScheduleByGroup: api.getScheduleByGroup,
-  createScheduleItem: api.createScheduleItem,
-  updateScheduleItem: api.updateScheduleItem,
-  deleteScheduleItem: api.deleteScheduleItem,
-  getAllSchedules: api.getAllSchedules
-};
-
-export const attendanceApi = {
-  getAttendance: api.getAttendance,
-  updateAttendance: api.updateAttendance,
-  getRegularAttendance: api.getRegularAttendance,
-  updateRegularAttendance: api.updateRegularAttendance,
-  markAttendance: api.attendanceApi.markAttendance,
-  getGroupAttendance: api.attendanceApi.getGroupAttendance
-};
-
-export const progressApi = {
-  getProgressByChildId: api.getProgressByChildId,
-  createProgress: api.createProgress,
-  updateProgress: api.updateProgress,
-  getProgressById: api.getProgressById,
-  saveProgressStructure: async (params) => {
-    try {
-      const response = await axios.post(
-        `${API_BASE_URL}/progress/structure`,
-        params,
-        axiosConfig()
-      );
-      return response.data;
-    } catch (error) {
-      throw handleApiError(error);
-    }
-  }
-};
-
-// Экспортируем api как именованный экспорт
 export { api };
-
-// Экспортируем весь объект api как дефолтный экспорт
 export default api;

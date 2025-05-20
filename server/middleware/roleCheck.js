@@ -1,23 +1,34 @@
-const checkRole = (roles) => {
+const checkRole = (allowedRoles) => {
     return (req, res, next) => {
-        console.log('Проверка роли - входные данные:', {
-            allowedRoles: roles,
-            userRole: req.user?.role,
-            user: req.user
-        });
+        try {
+            const userRole = req.user.role;
 
-        if (!req.user) {
-            console.log('Пользователь не аутентифицирован');
-            return res.status(401).json({ message: 'Требуется аутентификация' });
+            if (!userRole) {
+                return res.status(403).json({
+                    error: 'Доступ запрещен',
+                    message: 'Роль пользователя не определена'
+                });
+            }
+
+            if (!Array.isArray(allowedRoles)) {
+                allowedRoles = [allowedRoles];
+            }
+
+            if (!allowedRoles.includes(userRole)) {
+                return res.status(403).json({
+                    error: 'Доступ запрещен',
+                    message: 'У вас нет прав для выполнения этого действия'
+                });
+            }
+
+            next();
+        } catch (error) {
+            console.error('Role check error:', error);
+            return res.status(500).json({
+                error: 'Ошибка при проверке прав доступа',
+                message: error.message
+            });
         }
-
-        if (!roles.includes(req.user.role)) {
-            console.log('Доступ запрещен - недостаточно прав');
-            return res.status(403).json({ message: 'Доступ запрещен' });
-        }
-
-        console.log('Проверка роли пройдена успешно');
-        next();
     };
 };
 

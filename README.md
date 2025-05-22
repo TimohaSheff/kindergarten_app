@@ -1,96 +1,71 @@
-# Kindergarten Application
+# Kindergarten App
 
-Веб-приложение для управления детским садом
+Система управления детским садом
 
-## Требования для локальной установки
+## Установка и настройка
+
+### Предварительные требования
 
 - Node.js (версия 14 или выше)
-- PostgreSQL (версия 13 или выше)
-- npm или yarn
+- npm (версия 6 или выше)
+- PostgreSQL (не требуется локальная установка)
 
-## Быстрый старт
+### Настройка базы данных
 
-### 1. Скачайте проект
+База данных размещена в облачном сервисе Render. Для подключения:
+
+1. Получите учетные данные для подключения к БД от администратора:
+   - Host: `dpg-xxx.render.com`
+   - Port: `5432`
+   - Database name: `kindergarten_xxx`
+   - Username: `xxx`
+   - Password: `xxx`
+
+2. Создайте файл `.env` в корневой директории проекта со следующими параметрами:
+```
+DB_HOST=dpg-xxx.render.com
+DB_PORT=5432
+DB_NAME=kindergarten_xxx
+DB_USER=xxx
+DB_PASSWORD=xxx
+JWT_SECRET=your_jwt_secret
+```
+
+### Установка и запуск
+
+1. Клонируйте репозиторий:
 ```bash
 git clone https://github.com/your-username/kindergarten-app.git
 cd kindergarten-app
 ```
 
-### 2. Настройка базы данных
-
-1. Установите PostgreSQL:
-   - Windows: Скачайте и установите с [официального сайта](https://www.postgresql.org/download/windows/)
-   - Mac: `brew install postgresql`
-   - Ubuntu: `sudo apt-get install postgresql`
-
-2. Восстановите базу данных из резервной копии:
+2. Установите зависимости:
 ```bash
-# Windows (запустите psql)
-createdb -U postgres kindergarten
-psql -U postgres kindergarten < kindergarten_backup.sql
-
-# Linux/Mac
-sudo -u postgres createdb kindergarten
-sudo -u postgres psql kindergarten < kindergarten_backup.sql
-```
-
-### 3. Настройка проекта
-
-1. Скопируйте файл с настройками:
-```bash
-cp .env.example .env
-```
-
-2. Отредактируйте `.env` файл:
-   - Укажите пароль от вашей базы данных PostgreSQL в `DB_PASSWORD`
-   - Остальные настройки можно оставить по умолчанию для локальной разработки
-
-### 4. Запуск сервера
-
-```bash
-# Перейдите в папку сервера
-cd server
-
-# Установите зависимости
 npm install
-
-# Запустите сервер
-npm run dev
 ```
 
-### 5. Запуск клиента
-
-Откройте новое окно терминала и выполните:
+3. Запустите сервер:
 ```bash
-# Перейдите в папку клиента
-cd client
-
-# Установите зависимости
-npm install
-
-# Запустите клиент
-npm start
+npm run server
 ```
 
-### 6. Готово!
+4. В отдельном терминале запустите клиентское приложение:
+```bash
+npm run client
+```
 
-- Откройте браузер и перейдите по адресу: http://localhost:3000
-- API сервер работает по адресу: http://localhost:5000
+Приложение будет доступно по адресу `http://localhost:3000`
 
-## Возможные проблемы и решения
+## Структура проекта
 
-### Ошибка подключения к базе данных
-- Проверьте, что PostgreSQL запущен
-- Проверьте правильность пароля в файле `.env`
-- Убедитесь, что база данных `kindergarten` создана
+- `/client` - React клиент
+- `/server` - Express сервер
+- `/config` - Конфигурационные файлы
+- `/models` - Модели базы данных
+- `/routes` - API маршруты
+- `/middleware` - Промежуточные обработчики
+- `/utils` - Вспомогательные функции
 
-### Ошибка "port already in use"
-- Проверьте, не запущено ли уже приложение
-- Измените порт в файле `.env` если нужно
+## Лицензия
 
-### Не работает авторизация
-- Проверьте, что в `.env` установлены корректные значения для JWT_SECRET и JWT_REFRESH_SECRET
-
-## Поддержка
-
-Если возникли проблемы при установке, создайте issue в репозитории проекта.
+MIT
